@@ -102,6 +102,68 @@ class BasePlugin:
     async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Any:
         """Выполняет инструмент"""
         raise NotImplementedError()
+
+    # CRUDS базовые методы
+    async def create(self, data: Dict[str, Any]) -> Any:
+        """
+        Создает новый объект
+        
+        Args:
+            data: Данные для создания объекта
+            
+        Returns:
+            ID созданного объекта или сам объект
+        """
+        raise NotImplementedError()
+        
+    async def read(self, id: str) -> Optional[Dict[str, Any]]:
+        """
+        Получает объект по ID
+        
+        Args:
+            id: Идентификатор объекта
+            
+        Returns:
+            Объект или None, если не найден
+        """
+        raise NotImplementedError()
+        
+    async def update(self, id: str, data: Dict[str, Any]) -> bool:
+        """
+        Обновляет существующий объект
+        
+        Args:
+            id: Идентификатор объекта
+            data: Новые данные
+            
+        Returns:
+            True если объект обновлен, False если объект не найден
+        """
+        raise NotImplementedError()
+        
+    async def delete(self, id: str) -> bool:
+        """
+        Удаляет объект
+        
+        Args:
+            id: Идентификатор объекта
+            
+        Returns:
+            True если объект удален, False если объект не найден
+        """
+        raise NotImplementedError()
+        
+    async def search(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Поиск объектов по параметрам
+        
+        Args:
+            query: Параметры поиска
+            
+        Returns:
+            Список найденных объектов
+        """
+        raise NotImplementedError()
     
     async def rag_hook(self, query: str) -> Optional[Dict[str, Any]]:
         """

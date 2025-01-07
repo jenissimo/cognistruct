@@ -11,3 +11,5 @@ python-telegram-bot
 telegramify-markdown
 openai
 rich
+scikit-learn
+numpy
