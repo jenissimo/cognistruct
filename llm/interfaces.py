@@ -1,56 +1,65 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional, AsyncGenerator, Union
 
-from pydantic import BaseModel
-
-
-class ToolParameter(BaseModel):
-    name: str
-    type: str
-    description: str
-    required: bool = True
-
-
-class ToolSchema(BaseModel):
+@dataclass
+class ToolSchema:
+    """Схема инструмента для LLM"""
     name: str
     description: str
-    parameters: List[ToolParameter]
+    parameters: Dict[str, Any]
 
-
-class ToolCall(BaseModel):
-    """Модель для вызова инструмента"""
-    tool: str  # Имя инструмента
-    params: Dict[str, Any]  # Параметры вызова
-    id: Optional[str] = None  # Идентификатор вызова
-    index: Optional[int] = None  # Индекс вызова
-
-
-class LLMResponse(BaseModel):
-    """Ответ от языковой модели"""
+@dataclass
+class LLMResponse:
+    """Ответ от LLM"""
     content: str
-    tool_calls: Optional[List[ToolCall]] = None
-    tool_messages: Optional[List[Dict[str, Any]]] = None  # История взаимодействия с инструментами
+    tool_messages: Optional[List[Dict[str, Any]]] = None
+    is_complete: bool = True  # Флаг завершенности для стриминга
 
+@dataclass
+class LLMStreamChunk:
+    """Чанк данных при стриминге"""
+    content: str
+    is_tool_call: bool = False
+    tool_name: Optional[str] = None
+    tool_args: Optional[Dict[str, Any]] = None
+    is_complete: bool = False
 
 class BaseLLM(ABC):
-    """Базовый интерфейс для работы с языковыми моделями"""
-
+    """Базовый класс для всех LLM провайдеров"""
+    
+    @abstractmethod
+    def set_tool_executor(self, executor):
+        """Устанавливает функцию для выполнения инструментов"""
+        pass
+        
     @abstractmethod
     async def generate_response(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         tools: Optional[List[ToolSchema]] = None,
         temperature: float = 0.7,
-    ) -> LLMResponse:
+        response_format: Optional[str] = None,
+        stream: bool = False,
+        **kwargs
+    ) -> Union[LLMResponse, AsyncGenerator[LLMStreamChunk, None]]:
         """
-        Генерирует ответ на основе истории сообщений и доступных инструментов
-
+        Генерирует ответ на основе сообщений
+        
         Args:
-            messages: История сообщений в формате [{role: str, content: str}]
-            tools: Список доступных инструментов
-            temperature: Температура генерации (0.0 - 1.0)
-
+            messages: История сообщений
+            tools: Доступные инструменты
+            temperature: Температура генерации
+            response_format: Формат ответа (например, "json")
+            stream: Использовать потоковую генерацию
+            **kwargs: Дополнительные параметры
+            
         Returns:
-            LLMResponse с текстом ответа и опциональными вызовами инструментов
+            LLMResponse или AsyncGenerator[LLMStreamChunk, None] при stream=True
         """
+        pass
+        
+    @abstractmethod
+    async def close(self):
+        """Закрывает соединение с API"""
         pass 

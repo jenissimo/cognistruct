@@ -1,5 +1,6 @@
 pydantic
 fastapi
+jwt
 uvicorn
 pydantic
 aiohttp

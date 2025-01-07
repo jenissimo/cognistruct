@@ -13,29 +13,42 @@ def main():
         current_config = Config.load()
         has_api_key = bool(current_config.deepseek_api_key)
         has_telegram = bool(current_config.telegram_token)
+        has_admin = bool(current_config.admin_username)
         
         if has_api_key:
             logger.info("Найден существующий DeepSeek API ключ")
         if has_telegram:
             logger.info("Найден существующий Telegram токен")
+        if has_admin:
+            logger.info("Найдены существующие админ-креденшлы для REST API")
     except:
         current_config = None
         has_api_key = False
         has_telegram = False
+        has_admin = False
     
     # Запрашиваем новые значения
     api_key = input("Введите ваш DeepSeek API ключ" + (" (Enter чтобы оставить текущий)" if has_api_key else "") + ": ").strip()
     telegram_token = input("Введите токен Telegram бота" + (" (Enter чтобы оставить текущий)" if has_telegram else " (опционально)") + ": ").strip()
+    
+    # Запрашиваем админские креденшлы для REST API
+    admin_username = input("Введите имя пользователя для REST API" + (" (Enter чтобы оставить текущий)" if has_admin else "") + ": ").strip()
+    admin_password = input("Введите пароль для REST API" + (" (Enter чтобы оставить текущий)" if has_admin else "") + ": ").strip()
     
     # Сохраняем старые значения если ввод пустой
     if has_api_key and not api_key:
         api_key = current_config.deepseek_api_key
     if has_telegram and not telegram_token:
         telegram_token = current_config.telegram_token
+    if has_admin and not admin_username:
+        admin_username = current_config.admin_username
+        admin_password = current_config.admin_password
     
     config = Config(
         deepseek_api_key=api_key,
-        telegram_token=telegram_token if telegram_token else None
+        telegram_token=telegram_token if telegram_token else None,
+        admin_username=admin_username if admin_username else None,
+        admin_password=admin_password if admin_password else None
     )
     config.save()
     
@@ -44,6 +57,9 @@ def main():
         logger.info("Для использования Telegram бота запустите example_telegram_agent.py")
     else:
         logger.info("Для базового тестирования запустите example_simple_agent.py")
+    
+    if admin_username and admin_password:
+        logger.info(f"REST API доступен с креденшлами: {admin_username}:{'*' * len(admin_password)}")
 
 
 if __name__ == "__main__":
