@@ -1,5 +1,5 @@
 from .interfaces import BaseLLM, LLMResponse, ToolSchema, ToolParameter, ToolCall
-from .deepseek_service import DeepSeekLLM, DeepSeekConfig
+from .openai_service import OpenAIService, OpenAIProvider
 from .llm import LLMRouter
 
 __all__ = [
@@ -8,7 +8,7 @@ __all__ = [
     'ToolSchema',
     'ToolParameter',
     'ToolCall',
-    'LLMRouter',
-    'DeepSeekLLM',
-    'DeepSeekConfig'
+    'OpenAIService',
+    'OpenAIProvider',
+    'LLMRouter'
 ] 

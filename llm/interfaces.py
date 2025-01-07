@@ -29,6 +29,7 @@ class LLMResponse(BaseModel):
     """Ответ от языковой модели"""
     content: str
     tool_calls: Optional[List[ToolCall]] = None
+    tool_messages: Optional[List[Dict[str, Any]]] = None  # История взаимодействия с инструментами
 
 
 class BaseLLM(ABC):

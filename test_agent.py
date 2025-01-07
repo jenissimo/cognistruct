@@ -3,12 +3,12 @@ import logging
 from typing import Optional
 
 from utils import Config, init_logging, setup_logger, get_timezone
-from llm import DeepSeekLLM, DeepSeekConfig
+from llm import LLMRouter
 from agents.base_agent import BaseAgent
 from plugins.example_plugin.plugin import CalculatorPlugin
 from plugins.scheduler_plugin.plugin import SchedulerPlugin
 
-#init_logging(level=logging.DEBUG)
+#init_logging(level=logging.INFO)
 logger = setup_logger(__name__)
 
 class ConsoleInterface:
@@ -26,13 +26,20 @@ class ConsoleInterface:
         timezone = get_timezone()
         logger.info("Using timezone: %s", str(timezone))
         
-        # Инициализируем LLM
-        llm = DeepSeekLLM(
-            DeepSeekConfig(
-                api_key=config.deepseek_api_key
-            )
+        # Инициализируем LLM через роутер
+        router = LLMRouter()
+        llm = router.create_instance(
+            provider="ollama",
+            api_key="",  # Не требуется для локального Ollama
+            model="herenickname/t-tech_T-lite-it-1.0:q4_k_m"
         )
-        
+
+        #llm = router.create_instance(
+        #    provider="deepseek",
+        #    api_key=config.deepseek_api_key,
+        #    model="deepseek-chat"
+        #)
+
         # Создаем агента
         self.agent = BaseAgent(llm=llm, auto_load_plugins=False)
         
@@ -54,7 +61,6 @@ class ConsoleInterface:
             print(f"\n📦 Плагин: {plugin.name}")
             for tool in plugin.get_tools():
                 print(f"  🔧 {tool.name}: {tool.description}")
-
 
         print(f"\n🌍 Используется часовой пояс: {timezone}")
         print("\n💡 Бот готов к работе! Для выхода введите 'exit'\n")
@@ -81,10 +87,11 @@ class ConsoleInterface:
                 message=user_input,
                 system_prompt=(
                     "Ты - полезный ассистент. Отвечай кратко и по делу. "
-                    "Для любых математических вычислений ВСЕГДА используй инструмент calculator. "
+                    "ВАЖНО: Для ЛЮБЫХ математических вычислений ты ДОЛЖЕН использовать инструмент calculate. "
+                    "НИКОГДА не пытайся вычислять самостоятельно, даже если кажется, что это просто. "
                     "Для планирования задач используй инструменты планировщика. "
-                    "При планировании учитывай часовой пояс пользователя."
-                )
+                    "При планировании учитывай часовой пояс пользователя"
+                ),
             )
             print(f"\n🤖 {response}\n")
             

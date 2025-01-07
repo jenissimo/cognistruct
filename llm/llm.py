@@ -1,7 +1,7 @@
 from typing import Dict, Optional, Type
 
 from llm.interfaces import BaseLLM
-from llm.deepseek_service import DeepSeekLLM, DeepSeekConfig
+from llm.openai_service import OpenAIService, OpenAIProvider, OPENAI, DEEPSEEK, OLLAMA
 from utils.logging import setup_logger
 
 logger = setup_logger(__name__)
@@ -11,48 +11,56 @@ class LLMRouter:
     """Роутер для работы с различными LLM провайдерами"""
     
     def __init__(self):
-        self._providers: Dict[str, Type[BaseLLM]] = {
-            "deepseek": DeepSeekLLM
+        # Предопределенные провайдеры
+        self._providers = {
+            "openai": OPENAI,
+            "deepseek": DEEPSEEK,
+            "ollama": OLLAMA
         }
         self._instances: Dict[str, BaseLLM] = {}
         logger.info("LLMRouter initialized with providers: %s", list(self._providers.keys()))
 
-    def register_provider(self, name: str, provider: Type[BaseLLM]):
-        """Регистрирует нового провайдера LLM"""
+    def register_provider(self, name: str, provider: OpenAIProvider):
+        """Регистрирует нового провайдера"""
         self._providers[name] = provider
-        logger.info("Registered new LLM provider: %s", name)
+        logger.info("Registered new provider: %s", name)
 
     def get_instance(self, provider: str) -> Optional[BaseLLM]:
         """Возвращает экземпляр LLM по имени провайдера"""
-        instance = self._instances.get(provider)
-        if instance:
-            logger.debug("Retrieved existing LLM instance: %s", provider)
-        else:
-            logger.debug("No existing instance found for provider: %s", provider)
-        return instance
+        return self._instances.get(provider)
 
-    def create_instance(self, provider: str, config: dict) -> BaseLLM:
-        """Создает новый экземпляр LLM"""
-        if provider not in self._providers:
-            logger.error("Attempted to create instance with unknown provider: %s", provider)
-            raise ValueError(f"Unknown LLM provider: {provider}")
-            
-        provider_class = self._providers[provider]
+    def create_instance(self, provider: str, api_key: str, model: Optional[str] = None) -> BaseLLM:
+        """
+        Создает новый экземпляр LLM
         
-        if provider == "deepseek":
-            config = DeepSeekConfig(**config)
+        Args:
+            provider: Имя провайдера (openai, deepseek, ollama или кастомный)
+            api_key: API ключ (для Ollama можно пустой)
+            model: Название модели (обязательно для Ollama, опционально для других)
+        """
+        if provider not in self._providers:
+            raise ValueError(f"Unknown provider: {provider}")
             
-        instance = provider_class(config)
+        # Создаем копию конфигурации провайдера
+        provider_config = self._providers[provider]
+        config = OpenAIProvider(
+            name=provider_config.name,
+            model=model or provider_config.model,  # Используем указанную модель или дефолтную
+            api_base=provider_config.api_base,
+            api_key=api_key
+        )
+            
+        # Создаем экземпляр сервиса
+        instance = OpenAIService(config)
         self._instances[provider] = instance
-        logger.info("Created new LLM instance for provider: %s", provider)
+        logger.info("Created new instance for provider: %s with model: %s", 
+                   provider, config.model)
         return instance
 
     async def close_all(self):
         """Закрывает все активные соединения"""
         logger.info("Closing all LLM connections...")
         for provider, instance in self._instances.items():
-            if hasattr(instance, 'close'):
-                logger.debug("Closing connection for provider: %s", provider)
-                await instance.close()
+            await instance.close()
         self._instances.clear()
         logger.info("All LLM connections closed") 

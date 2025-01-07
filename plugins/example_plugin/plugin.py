@@ -19,7 +19,7 @@ class CalculatorPlugin(BasePlugin):
         return [
             ToolSchema(
                 name="calculate",
-                description="Выполняет математические вычисления",
+                description="Выполняет математические вычисления, возвращает ответ текстом",
                 parameters=[
                     ToolParameter(
                         name="expression",
@@ -47,7 +47,7 @@ class CalculatorPlugin(BasePlugin):
                 
                 # Вычисляем выражение
                 result = eval(expression, {"__builtins__": {}}, safe_dict)
-                return str(result)
+                return f"Ответ: {result}"
                 
             except Exception as e:
                 return f"Ошибка вычисления: {str(e)}"

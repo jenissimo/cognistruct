@@ -25,6 +25,16 @@ class BaseAgent:
         self.conversation_history: List[Dict[str, str]] = []
         self.auto_load_plugins = auto_load_plugins
         self._current_system_prompt: Optional[str] = None
+        
+        # Автоматически загружаем плагины если нужно
+        if auto_load_plugins:
+            self.plugin_manager.load_plugins()
+            
+        # Устанавливаем обработчик инструментов для LLM
+        async def tool_executor(tool_name: str, **kwargs):
+            return await self.plugin_manager.execute_tool(tool_name, kwargs)
+            
+        self.llm.set_tool_executor(tool_executor)
 
     def _update_system_prompt(self, new_prompt: Optional[str]) -> bool:
         """
@@ -61,7 +71,8 @@ class BaseAgent:
     async def _execute_tool_call(self, tool_calls: List[ToolCall], response_type: str = "text") -> str:
         """Выполняет вызов инструмента и форматирует результат"""
         logger.info("Executing %d tool calls", len(tool_calls))
-        
+        print(tool_calls)
+
         if response_type == "json":
             results = []
             for call in tool_calls:
