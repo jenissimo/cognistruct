@@ -3,6 +3,7 @@ import json
 
 from llm import BaseLLM, LLMResponse, ToolCall
 from plugins import PluginManager
+from plugins.base_plugin import IOMessage
 from utils.logging import setup_logger
 
 
@@ -136,131 +137,68 @@ class BaseAgent:
                 sections.append(str(plugin_context))
         return "\n".join(sections)
 
-    async def process_message(
-        self, 
-        message: str, 
-        system_prompt: Optional[str] = None,
-        response_type: Literal["text", "json"] = "text",
-        llm_params: Optional[Dict[str, Any]] = None
-    ) -> Union[str, dict]:
+    async def process_message(self, message: str, system_prompt: str = None) -> str:
         """
         Обрабатывает входящее сообщение
         
         Args:
-            message: Текст сообщения от пользователя
-            system_prompt: Системный промпт для модели
-            response_type: Тип ответа ("text" или "json")
-            llm_params: Дополнительные параметры для LLM
-            
-        Returns:
-            Ответ агента (строка или JSON в зависимости от response_type)
+            message: Входящее сообщение
+            system_prompt: Системный промпт (опционально)
         """
-        logger.info("Processing message: %s", message)
+        # Создаем объект сообщения
+        io_message = IOMessage(content=message)
         
-        # Создаем временную историю для этого запроса
-        current_history = []
+        # Выполняем input_hooks
+        for plugin in self.plugin_manager.get_all_plugins():
+            if hasattr(plugin, 'input_hook'):
+                if await plugin.input_hook(io_message):
+                    break
         
-        # Обновляем системный промпт только если он изменился
-        if self._update_system_prompt(system_prompt) and system_prompt:
-            current_history.append({
+        # Создаем базовый список сообщений
+        messages = []
+        
+        # Добавляем системный промпт если есть
+        if system_prompt:
+            messages.append({
                 "role": "system",
                 "content": system_prompt
             })
         
-        # Добавляем предыдущую историю
-        current_history.extend(self.conversation_history)
+        # Собираем контекст из RAG-хуков всех плагинов
+        context = {}
+        for plugin in self.plugin_manager.get_all_plugins():
+            if hasattr(plugin, 'rag_hook'):
+                plugin_context = await plugin.rag_hook(message)
+                if plugin_context:  # Добавляем проверку на None
+                    context.update(plugin_context)
         
-        # Добавляем текущее сообщение
-        current_history.append({"role": "user", "content": message})
-        
-        # Получаем и добавляем RAG контекст
-        rag_context = await self._get_formatted_rag_context(message)
-        if rag_context:
-            current_history.append({
+        # Если есть контекст, добавляем его в системный промпт
+        if context:
+            context_message = "Контекст из предыдущих сообщений:\n" + \
+                             "\n".join(f"{k}: {v}" for k, v in context.items())
+            messages.append({
                 "role": "system",
-                "content": f"Additional context:\n{rag_context}"
+                "content": context_message
             })
         
-        # Получаем доступные инструменты
-        tools = self._get_available_tools()
-        logger.debug("Available tools: %s", [t.name for t in tools])
-        
-        # Подготавливаем параметры для LLM
-        llm_call_params = {
-            "messages": current_history,
-            "tools": tools,
-        }
-        
-        # Если запрошен JSON-ответ, указываем это для LLM
-        if response_type == "json":
-            llm_call_params["response_format"] = "json_object"
-            
-        # Добавляем дополнительные параметры
-        if llm_params:
-            llm_call_params.update(llm_params)
-        
-        # Генерируем ответ через LLM
-        response: LLMResponse = await self.llm.generate_response(**llm_call_params)
-        
-        logger.info("LLM response: %s", response.content)
-        if response.tool_calls:
-            logger.debug("Tool calls: %s", response.tool_calls)
-        
-        # Если есть вызов инструмента, выполняем его
-        if response.tool_calls:
-            logger.debug("Tool calls detected, executing...")
-            tool_result = await self._execute_tool_call(response.tool_calls, response_type)
-            
-            # Добавляем результат выполнения инструмента в историю
-            logger.debug("Adding tool results to conversation history")
-            
-            # Преобразуем ToolCall в словарь для JSON
-            tool_calls_dict = []
-            for call in response.tool_calls:
-                tool_calls_dict.append({
-                    "id": call.id,
-                    "type": "function",
-                    "function": {
-                        "name": call.tool,
-                        "arguments": json.dumps(call.params)
-                    }
-                })
-            
-            # Сначала добавляем сообщение от ассистента с вызовом инструмента
-            current_history.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": tool_calls_dict
-            })
-            
-            # Затем добавляем результаты выполнения инструментов
-            for call in response.tool_calls:
-                current_history.append({
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": tool_result
-                })
-            
-            # Получаем финальный ответ от LLM с учетом результата
-            logger.debug("Getting final response from LLM with tool results")
-            response = await self.llm.generate_response(
-                messages=current_history,
-                **(llm_params or {})
-            )
-            logger.info("Final LLM response: %s", response.content)
-        
-        # Добавляем ответ ассистента в основную историю
-        self.conversation_history.append({
-            "role": "assistant",
-            "content": response.content
+        # Добавляем сообщение пользователя
+        messages.append({
+            "role": "user",
+            "content": message
         })
         
-        # Возвращаем ответ в нужном формате
-        if response_type == "json":
-            return {
-                "response": response.content,
-                "history": current_history,
-                "tool_calls": response.tool_calls
-            }
-        else:
-            return response.content 
+        # Получаем ответ от LLM
+        response = await self.llm.generate_response(
+            messages=messages,
+            tools=self.plugin_manager.get_all_tools()
+        )
+        
+        # Создаем объект ответного сообщения
+        response_message = IOMessage(content=response.content)
+        
+        # Выполняем output_hooks
+        for plugin in self.plugin_manager.get_all_plugins():
+            if hasattr(plugin, 'output_hook'):
+                await plugin.output_hook(response_message)
+        
+        return response.content 

@@ -17,11 +17,11 @@ class PluginMetadata:
 @dataclass
 class IOMessage:
     """Сообщение для I/O хуков"""
-    type: str                     # Тип сообщения (text, image, action, etc)
-    content: Any                  # Содержимое сообщения
-    metadata: Dict[str, Any] = field(default_factory=dict) # Дополнительные данные
-    source: str = ""             # Источник сообщения
-    timestamp: float = field(default_factory=time.time) # Время создания
+    type: str = "text"           # Тип сообщения (text, image, action, etc)
+    content: Any = None          # Содержимое сообщения
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Дополнительные данные
+    source: str = ""            # Источник сообщения
+    timestamp: float = field(default_factory=time.time)  # Время создания
 
 
 class BasePlugin:
@@ -46,12 +46,12 @@ class BasePlugin:
     @property
     def name(self) -> str:
         """Имя плагина"""
-        return self._metadata["name"]
+        return self._metadata.name
         
     @property
     def priority(self) -> int:
         """Приоритет плагина"""
-        return self._metadata["priority"]
+        return self._metadata.priority
 
     @property
     def supported_input_types(self) -> List[str]:
@@ -63,16 +63,12 @@ class BasePlugin:
         """Поддерживаемые типы исходящих сообщений"""
         return self._supported_output_types
     
-    def get_metadata(self) -> Dict[str, Any]:
+    def get_metadata(self) -> PluginMetadata:
         """
         Возвращает метаданные плагина
         
         Returns:
-            Dict с полями:
-                name: Имя плагина
-                description: Описание плагина
-                version: Версия плагина
-                priority: Приоритет плагина (больше - важнее)
+            PluginMetadata: метаданные плагина
         """
         raise NotImplementedError()
     

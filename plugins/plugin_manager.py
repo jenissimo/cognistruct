@@ -197,3 +197,10 @@ class PluginManager:
                     raise
         
         raise ValueError(f"Tool {tool_name} not found in any plugin") 
+
+    def get_all_tools(self) -> List[Dict[str, Any]]:
+        """Возвращает список всех доступных инструментов от всех плагинов"""
+        tools = []
+        for plugin in self.get_all_plugins():
+            tools.extend(plugin.get_tools())
+        return tools 

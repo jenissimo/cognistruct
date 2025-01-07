@@ -1,19 +1,19 @@
 from typing import List, Dict, Any
 
-from plugins.base_plugin import BasePlugin
+from plugins.base_plugin import BasePlugin, PluginMetadata
 from llm.interfaces import ToolSchema, ToolParameter
 
 
 class CalculatorPlugin(BasePlugin):
     """Плагин для выполнения математических вычислений"""
     
-    def get_metadata(self) -> Dict[str, Any]:
-        return {
-            "name": "calculator",
-            "description": "Выполняет математические вычисления",
-            "version": "1.0",
-            "priority": 50
-        }
+    def get_metadata(self) -> PluginMetadata:
+        return PluginMetadata(
+            name="calculator",
+            description="Выполняет математические вычисления",
+            version="1.0.0",
+            priority=50
+        )
         
     def get_tools(self) -> List[ToolSchema]:
         return [

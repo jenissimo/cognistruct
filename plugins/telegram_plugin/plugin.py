@@ -3,7 +3,7 @@ import logging
 from typing import Dict, Any, Optional
 from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
-from plugins.base_plugin import BasePlugin, IOMessage
+from plugins.base_plugin import BasePlugin, IOMessage, PluginMetadata
 from .bot import TelegramBot
 from .database import TelegramDatabase
 from .handlers import TelegramHandlers
@@ -27,13 +27,13 @@ class TelegramPlugin(BasePlugin):
         self.handlers = None
         self.message_handler = None  # Добавляем обработчик сообщений
         
-    def get_metadata(self) -> Dict[str, Any]:
-        return {
-            "name": "telegram",
-            "description": "Telegram интеграция",
-            "version": "1.0.0",
-            "priority": 10
-        }
+    def get_metadata(self) -> PluginMetadata:
+        return PluginMetadata(
+            name="telegram",
+            description="Telegram интеграция",
+            version="1.0.0",
+            priority=10
+        )
         
     async def setup(self, token: str = None):
         """

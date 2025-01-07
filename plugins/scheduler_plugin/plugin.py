@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, time
 import zoneinfo
 from typing import Dict, List, Optional, Any, Callable
 
-from plugins.base_plugin import BasePlugin, IOMessage
+from plugins.base_plugin import BasePlugin, IOMessage, PluginMetadata
 from llm.interfaces import ToolSchema, ToolParameter
 from utils.scheduler import Scheduler, Task
 from utils.logging import setup_logger
@@ -21,13 +21,13 @@ class SchedulerPlugin(BasePlugin):
         self._started = False
         self._agent = None  # Ссылка на агента для выполнения задач
         
-    def get_metadata(self) -> Dict[str, Any]:
-        return {
-            "name": "scheduler",
-            "description": "Управление запланированными задачами",
-            "version": "1.0",
-            "priority": 100
-        }
+    def get_metadata(self) -> PluginMetadata:
+        return PluginMetadata(
+            name="scheduler",
+            description="Управление запланированными задачами",
+            version="1.0.0",
+            priority=100
+        )
         
     async def setup(self):
         if not self._started:
