@@ -11,6 +11,7 @@
 - 📅 Планировщик задач
 - 🔢 Калькулятор с безопасными вычислениями
 - 📱 Интеграция с Telegram
+- 🎨 Поддержка Markdown в консоли
 
 ## Установка
 
@@ -36,13 +37,31 @@ python examples/example_simple_agent.py
 
 ## Плагины
 
+### ConsolePlugin
+Обработка консольного ввода/вывода с поддержкой Markdown.
+
+```python
+console = ConsolePlugin(
+    prompt="👤 ",                    # Строка приглашения ввода
+    exit_command="exit",             # Команда для выхода
+    exit_message="\n👋 До свидания!", # Сообщение при выходе
+    use_markdown=True,               # Включить форматирование Markdown
+    use_emojis=True                  # Использовать эмодзи
+)
+
+# Регистрация обработчика сообщений
+async def handle_message(message: IOMessage):
+    await agent.process_message(message.content)
+
+console.set_message_handler(handle_message)
+```
+
 ### ShortTermMemory
 Хранит контекст последних сообщений для поддержания связного диалога.
 
 ```python
 memory = ShortTermMemoryPlugin(
-    max_messages=15,  # Количество хранимых сообщений (примерно 7-8 обменов репликами)
-    db_path="data/chat_memory.db"  # Опционально: путь к файлу базы данных
+    max_messages=15  # Количество хранимых сообщений (примерно 7-8 обменов репликами)
 )
 ```
 
@@ -52,16 +71,6 @@ memory = ShortTermMemoryPlugin(
 - Добавляет историю диалога в контекст для LLM
 - Удаляет старые сообщения при добавлении новых
 - Хранит сообщения в SQLite базе данных
-
-Параметры:
-- `max_messages`: количество хранимых сообщений
-- `db_path`: путь к файлу базы данных (по умолчанию "data/short_term_memory.db")
-
-Пример использования контекста:
-```python
-User: Какой язык программирования мы обсуждали?
-Assistant: Судя по нашей предыдущей беседе, мы обсуждали Python в контексте асинхронного программирования.
-```
 
 ### Calculator
 Безопасное выполнение математических вычислений.
@@ -82,19 +91,12 @@ scheduler = SchedulerPlugin(
 # Использование: "schedule_task ..."
 ```
 
-### Telegram
-Интеграция с Telegram Bot API.
-
-```python
-telegram = TelegramPlugin()
-await telegram.setup(token="YOUR_BOT_TOKEN")
-```
-
 ## Создание агента
 
 ```python
 from agents import BaseAgent
 from llm import LLMRouter
+from plugins.console_plugin import ConsolePlugin
 
 # Инициализация LLM
 router = LLMRouter()
@@ -107,16 +109,19 @@ llm = router.create_instance(
 # Создание агента
 agent = BaseAgent(llm=llm)
 
-# Регистрация плагинов
-agent.plugin_manager.register_plugin("memory", memory)
-agent.plugin_manager.register_plugin("calculator", calculator)
-agent.plugin_manager.register_plugin("scheduler", scheduler)
+# Создание и настройка плагинов
+console = ConsolePlugin(use_markdown=True)
+memory = ShortTermMemoryPlugin(max_messages=15)
 
-# Обработка сообщений
-response = await agent.process_message(
-    message="Привет!",
-    system_prompt="Ты - полезный ассистент"
-)
+# Регистрация плагинов
+agent.plugin_manager.register_plugin("console", console)
+agent.plugin_manager.register_plugin("memory", memory)
+
+# Запуск агента
+await agent.start()
+
+# Запуск консольного интерфейса
+await console.start()
 ```
 
 ## Разработка плагинов
@@ -124,7 +129,7 @@ response = await agent.process_message(
 Создайте новый плагин, унаследовавшись от BasePlugin:
 
 ```python
-from plugins.base_plugin import BasePlugin, PluginMetadata
+from plugins.base_plugin import BasePlugin, PluginMetadata, IOMessage
 
 class MyPlugin(BasePlugin):
     def get_metadata(self) -> PluginMetadata:
@@ -135,13 +140,13 @@ class MyPlugin(BasePlugin):
             priority=50
         )
         
-    async def setup(self):
-        # Инициализация плагина
-        pass
+    async def input_hook(self, message: IOMessage) -> bool:
+        """Обработка входящих сообщений"""
+        return False
         
-    def get_tools(self) -> List[Dict[str, Any]]:
-        # Описание инструментов
-        return []
+    async def output_hook(self, message: IOMessage):
+        """Обработка исходящих сообщений"""
+        pass
 ```
 
 ## Лицензия

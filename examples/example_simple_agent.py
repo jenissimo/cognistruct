@@ -13,6 +13,7 @@ from agents.base_agent import BaseAgent
 from plugins.example_plugin.plugin import CalculatorPlugin
 from plugins.scheduler_plugin.plugin import SchedulerPlugin
 from plugins.short_term_memory.plugin import ShortTermMemoryPlugin
+from plugins.console_plugin.plugin import ConsolePlugin, IOMessage
 
 # Загружаем конфигурацию
 config = Config.load()
@@ -29,9 +30,7 @@ SYSTEM_PROMPT = """
 ВАЖНО:
 1. Для ЛЮБЫХ математических вычислений используй инструмент calculate
 2. НИКОГДА не пытайся вычислять самостоятельно
-3. Для планирования задач используй инструменты планировщика
-4. При планировании учитывай часовой пояс пользователя
-5. Если в контексте есть предыдущие сообщения (recent_messages), используй их для поддержания связности диалога
+3. Если в контексте есть предыдущие сообщения (recent_messages), используй их для поддержания связности диалога
 
 Пример использования контекста:
 User: Какой язык программирования мы обсуждали?
@@ -79,26 +78,46 @@ async def setup_agent(llm) -> BaseAgent:
         tick_interval=1.0,
         timezone=str(get_timezone())
     )
-    
-    # Создаем плагин памяти с хранением последних 15 сообщений
-    # Это даст нам контекст примерно из 7-8 обменов репликами,
-    # что достаточно для поддержания связного диалога
     short_term_memory = ShortTermMemoryPlugin(
-        max_messages=15  # Храним больше сообщений для лучшего контекста
+        max_messages=15
     )
+    console = ConsolePlugin(
+        prompt="👤 ",
+        exit_command="exit",
+        exit_message="\n👋 До свидания!",
+        use_markdown=True,
+        use_emojis=True
+    )
+    
+    # Устанавливаем обработчик сообщений для консоли
+    async def handle_message(message: IOMessage):
+        try:
+            await agent.process_message(
+                message=message.content,
+                system_prompt=SYSTEM_PROMPT
+            )
+        except Exception as e:
+            logger.exception("Error processing message")
+            await console.output_hook(IOMessage(
+                type="error",
+                content=f"Произошла ошибка: {str(e)}"
+            ))
+    
+    console.set_message_handler(handle_message)
     
     # Инициализируем плагины
     await calculator.setup()
     await scheduler.setup()
     await short_term_memory.setup()
+    await console.setup()
     
-    # Регистрируем плагины в порядке приоритета
-    # Memory первым, чтобы контекст добавлялся до обработки другими плагинами
+    # Регистрируем плагины
     agent.plugin_manager.register_plugin("short_term_memory", short_term_memory)
     agent.plugin_manager.register_plugin("calculator", calculator)
     agent.plugin_manager.register_plugin("scheduler", scheduler)
+    agent.plugin_manager.register_plugin("console", console)
     
-    # Показываем доступные инструменты (только для калькулятора и планировщика)
+    # Показываем доступные инструменты
     print("\nДоступные инструменты:")
     for plugin in [calculator, scheduler]:
         print(f"\n📦 Плагин: {plugin.name}")
@@ -128,17 +147,10 @@ async def main():
         # Запускаем агента
         await agent.start()
         
-        # Основной цикл обработки ввода
-        while True:
-            try:
-                user_input = input("👤 ").strip()
-                if not await handle_console_input(user_input, agent):
-                    break
-            except KeyboardInterrupt:
-                # Очищаем буфер ввода и печатаем новую строку
-                print("\n👋 Работа прервана пользователем")
-                break
-                
+        # Получаем консольный плагин и запускаем обработку ввода
+        console = agent.plugin_manager.get_plugin("console")
+        await console.start()
+        
     except Exception as e:
         logger.exception("Unexpected error occurred")
         raise
@@ -151,5 +163,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        # Очищаем буфер ввода и печатаем новую строку
+        print("\033[2K\033[G", end="")  # Очищаем текущую строку
         print("\n👋 Работа прервана пользователем") 

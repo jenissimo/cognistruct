@@ -169,7 +169,7 @@ class BaseAgent:
         for plugin in self.plugin_manager.get_all_plugins():
             if hasattr(plugin, 'rag_hook'):
                 plugin_context = await plugin.rag_hook(message)
-                if plugin_context:  # Добавляем проверку на None
+                if plugin_context:
                     context.update(plugin_context)
         
         # Если есть контекст, добавляем его в системный промпт
@@ -194,7 +194,10 @@ class BaseAgent:
         )
         
         # Создаем объект ответного сообщения
-        response_message = IOMessage(content=response.content)
+        response_message = IOMessage(
+            type="text",  # Используем type="text" для консистентности
+            content=response.content
+        )
         
         # Выполняем output_hooks
         for plugin in self.plugin_manager.get_all_plugins():

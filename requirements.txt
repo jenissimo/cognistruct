@@ -10,3 +10,4 @@ tzdata
 python-telegram-bot
 telegramify-markdown
 openai
+rich
