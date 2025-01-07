@@ -14,8 +14,10 @@
 @dataclass
 class PluginMetadata:
     name: str          # Уникальное имя плагина
-    description: str   # Описание функциональности
-    version: str       # Версия плагина
+    description: str = ""   # Описание функциональности
+    version: str = "0.1.0"  # Версия плагина
+    author: str = ""        # Автор плагина
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Дополнительные метаданные
     priority: int = 0  # Приоритет (больше - важнее)
 ```
 
@@ -24,14 +26,50 @@ class PluginMetadata:
 Все плагины наследуются от `BasePlugin`, который определяет основной интерфейс:
 
 ```python
-class MyPlugin(BasePlugin):
+class BasePlugin:
+    def __init__(self):
+        self._metadata = self.get_metadata()
+        self._supported_input_types: List[str] = []
+        self._supported_output_types: List[str] = []
+    
+    @property
+    def name(self) -> str:
+        """Имя плагина"""
+        return self._metadata["name"]
+        
+    @property
+    def priority(self) -> int:
+        """Приоритет плагина"""
+        return self._metadata["priority"]
+
+    @property
+    def supported_input_types(self) -> List[str]:
+        """Поддерживаемые типы входящих сообщений"""
+        return self._supported_input_types
+
+    @property
+    def supported_output_types(self) -> List[str]:
+        """Поддерживаемые типы исходящих сообщений"""
+        return self._supported_output_types
+
     def get_metadata(self) -> Dict[str, Any]:
+        """Возвращает метаданные плагина"""
         return {
             "name": "my_plugin",
             "description": "Описание плагина",
             "version": "1.0.0",
             "priority": 0
         }
+
+    def register_input_type(self, message_type: str):
+        """Регистрирует поддерживаемый тип входящих сообщений"""
+        if message_type not in self._supported_input_types:
+            self._supported_input_types.append(message_type)
+
+    def register_output_type(self, message_type: str):
+        """Регистрирует поддерживаемый тип исходящих сообщений"""
+        if message_type not in self._supported_output_types:
+            self._supported_output_types.append(message_type)
 ```
 
 ## Жизненный цикл
@@ -141,9 +179,9 @@ class IOMessage:
     """Сообщение для I/O хуков"""
     type: str                     # Тип сообщения (text, image, action, etc)
     content: Any                  # Содержимое сообщения
-    metadata: Dict[str, Any] = {} # Дополнительные данные
+    metadata: Dict[str, Any] = field(default_factory=dict) # Дополнительные данные
     source: str = ""             # Источник сообщения
-    timestamp: float = time.time() # Время создания
+    timestamp: float = field(default_factory=time.time) # Время создания
 
 class BasePlugin:
     async def input_hook(self, message: IOMessage) -> bool:
@@ -383,4 +421,132 @@ async def test_my_plugin():
         assert result == expected_value
     finally:
         await plugin.cleanup()
+```
+
+## Управление плагинами
+
+### Менеджер плагинов
+
+Для управления плагинами используется класс `PluginManager`:
+
+```python
+class PluginManager:
+    def __init__(self):
+        self._plugins: Dict[str, BasePlugin] = {}
+        self._plugin_classes: Dict[str, Type[BasePlugin]] = {}
+        self._input_handlers: Dict[str, List[BasePlugin]] = {}
+        self._output_handlers: Dict[str, List[BasePlugin]] = {}
+```
+
+### Загрузка плагинов
+
+Плагины могут загружаться автоматически или вручную:
+
+```python
+# Автоматическая загрузка при создании агента
+agent = BaseAgent(llm, auto_load_plugins=True)  # По умолчанию True
+
+# Ручная загрузка
+agent = BaseAgent(llm, auto_load_plugins=False)
+await agent.plugin_manager.load_plugins()
+```
+
+При загрузке плагинов:
+- Каждый плагин должен находиться в отдельной поддиректории `plugins`
+- Основной класс плагина должен быть определен в файле `plugin.py`
+- Директории, начинающиеся с `_`, игнорируются
+
+После загрузки плагины нужно инициализировать:
+```python
+await plugin_manager.init_plugin("telegram")  # Инициализация конкретного плагина
+```
+
+### Приоритеты и порядок выполнения
+
+Плагины выполняются в порядке их приоритета (от большего к меньшему):
+- Входящие сообщения обрабатываются до первого успешного обработчика
+- Исходящие сообщения проходят через все обработчики последовательно
+- RAG-хуки выполняются для всех плагинов параллельно
+- Инструменты выполняются первым плагином, который их поддерживает
+
+```python
+# Пример порядка обработки сообщений
+plugins = [
+    TelegramPlugin(priority=100),  # Выполнится первым
+    LoggingPlugin(priority=50),    # Выполнится вторым
+    DefaultPlugin(priority=0)      # Выполнится последним
+]
+
+# Для входящих сообщений
+for plugin in sorted_by_priority(plugins):
+    if await plugin.input_hook(message):
+        break  # Останавливаемся после первой успешной обработки
+
+# Для исходящих сообщений
+message = original_message
+for plugin in sorted_by_priority(plugins):
+    message = await plugin.output_hook(message)
+    if message is None:
+        break  # Сообщение отменено
+```
+
+### Методы менеджера
+
+```python
+class PluginManager:
+    async def load_plugins(self, plugins_dir: str = "plugins"):
+        """Загружает плагины из директории"""
+        pass
+
+    async def init_plugin(self, name: str, **kwargs) -> BasePlugin:
+        """Инициализирует плагин с переданными параметрами"""
+        pass
+
+    def get_plugin(self, name: str) -> Optional[BasePlugin]:
+        """Возвращает экземпляр плагина по имени"""
+        pass
+
+    def get_all_plugins(self) -> List[BasePlugin]:
+        """Возвращает отсортированный по приоритету список плагинов"""
+        pass
+
+    async def process_input(self, message: IOMessage) -> bool:
+        """Обрабатывает входящее сообщение через все подходящие плагины"""
+        pass
+
+    async def process_output(self, message: IOMessage) -> Optional[IOMessage]:
+        """Обрабатывает исходящее сообщение через все подходящие плагины"""
+        pass
+
+    async def execute_rag_hooks(self, query: str) -> Dict[str, Any]:
+        """Выполняет RAG-хуки всех плагинов"""
+        pass
+
+    async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Any:
+        """Выполняет инструмент одного из плагинов"""
+        pass
+
+    async def cleanup(self):
+        """Очищает ресурсы всех плагинов"""
+        pass
+```
+
+### Типы сообщений
+
+Плагины могут регистрировать поддерживаемые типы сообщений:
+
+```python
+class MyPlugin(BasePlugin):
+    def __init__(self):
+        super().__init__()
+        self.register_input_type("text")
+        self.register_input_type("image")
+        self.register_output_type("text")
+```
+
+Менеджер плагинов автоматически маршрутизирует сообщения к нужным обработчикам:
+
+```python
+input_types, output_types = plugin_manager.get_supported_message_types()
+handlers = plugin_manager.get_input_handlers("text")  # Плагины для обработки текста
 ``` 

@@ -68,9 +68,11 @@ class TelegramPlugin(BasePlugin):
         # Устанавливаем обработчик сообщений
         self.handlers.message_handler = self.message_handler
         
-        # Только инициализируем бота, но не запускаем
+        # Инициализируем и запускаем бота
         await self.bot.start()
-        logger.info("Telegram bot initialized")
+        await self.bot.start_polling()
+        
+        logger.info("Telegram bot initialized and polling started")
         
     async def cleanup(self):
         """Очистка ресурсов"""
@@ -200,11 +202,6 @@ class TelegramPlugin(BasePlugin):
             str: Сгенерированный ключ
         """
         return await self.db.generate_secret_key(user_id, expires_in)
-        
-    async def start_polling(self):
-        """Запускает поллинг бота"""
-        logger.info("Starting telegram polling...")
-        await self.bot.start_polling()
         
     async def get_chat_id(self, user_id: str) -> Optional[str]:
         """

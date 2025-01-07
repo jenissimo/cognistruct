@@ -48,8 +48,8 @@ class BaseAgent:
             return True
         return False
 
-    async def setup(self):
-        """Инициализация агента"""
+    async def start(self):
+        """Инициализация и запуск агента"""
         # Загружаем плагины если нужно
         if self.auto_load_plugins:
             await self.plugin_manager.load_plugins()
