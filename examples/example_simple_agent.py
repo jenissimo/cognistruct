@@ -17,9 +17,9 @@ from plugins.scheduler_plugin.plugin import SchedulerPlugin
 config = Config.load()
 
 # Конфигурация LLM
-LLM_PROVIDER = "ollama"
-LLM_MODEL = "herenickname/t-tech_T-lite-it-1.0:q4_k_m"
-LLM_API_KEY = ""  # Не требуется для локального Ollama
+LLM_PROVIDER = "deepseek"
+LLM_MODEL = "deepseek-chat"
+LLM_API_KEY = config.deepseek_api_key
 
 # Системный промпт для агента
 SYSTEM_PROMPT = """

@@ -2,7 +2,7 @@ import platform
 from datetime import datetime
 from zoneinfo import ZoneInfo, available_timezones
 from typing import Optional
-
+import tzlocal
 from .logging import setup_logger
 
 logger = setup_logger(__name__)
@@ -15,30 +15,7 @@ def get_system_timezone() -> str:
     Returns:
         str: Идентификатор часового пояса
     """
-    try:
-        if platform.system() == 'Windows':
-            import tzlocal
-            return str(tzlocal.get_localzone())
-        else:
-            # На Unix-системах можно прочитать из /etc/timezone
-            with open('/etc/timezone', 'r') as f:
-                return f.read().strip()
-    except Exception as e:
-        logger.warning("Failed to detect system timezone: %s", e)
-        
-        # Пробуем определить часовой пояс по смещению
-        offset = datetime.now().astimezone().utcoffset()
-        if offset:
-            hours = offset.total_seconds() / 3600
-            if hours == 3:  # UTC+3
-                return "Europe/Moscow"
-            elif hours == 2:  # UTC+2
-                return "Europe/Kiev"
-            elif hours == 4:  # UTC+4
-                return "Europe/Samara"
-                
-        # Если не удалось определить, используем UTC
-        return "UTC"
+    return str(tzlocal.get_localzone())
 
 
 def validate_timezone(timezone: str) -> str:
