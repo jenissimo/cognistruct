@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, time
 import zoneinfo
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable
 
-from plugins.base_plugin import BasePlugin
+from plugins.base_plugin import BasePlugin, IOMessage
 from llm.interfaces import ToolSchema, ToolParameter
 from utils.scheduler import Scheduler, Task
 from utils.logging import setup_logger
@@ -19,6 +19,7 @@ class SchedulerPlugin(BasePlugin):
         self._callbacks: Dict[str, callable] = {}
         self.timezone = zoneinfo.ZoneInfo(timezone)
         self._started = False
+        self._agent = None  # Ссылка на агента для выполнения задач
         
     def get_metadata(self) -> Dict[str, Any]:
         return {
@@ -39,17 +40,26 @@ class SchedulerPlugin(BasePlugin):
             await self.scheduler.stop()
             logger.info("Scheduler plugin stopped")
             self._started = False
+
+    def set_agent(self, agent):
+        """Устанавливает ссылку на агента для выполнения задач"""
+        self._agent = agent
         
     def get_tools(self) -> List[ToolSchema]:
         return [
             ToolSchema(
                 name="schedule_task",
-                description="Планирует выполнение задачи",
+                description="Планирует выполнение задачи агентом. Задача будет выполнена с использованием всех доступных инструментов",
                 parameters=[
                     ToolParameter(
                         name="name",
                         type="string",
                         description="Уникальное имя задачи"
+                    ),
+                    ToolParameter(
+                        name="task_prompt",
+                        type="string",
+                        description="Описание задачи для выполнения агентом (например, 'Поздравить пользователя с днем рождения')"
                     ),
                     ToolParameter(
                         name="delay_seconds",
@@ -82,9 +92,16 @@ class SchedulerPlugin(BasePlugin):
                         required=False
                     ),
                     ToolParameter(
-                        name="message",
+                        name="system_prompt",
                         type="string",
-                        description="Сообщение для отправки агенту при выполнении задачи"
+                        description="Дополнительный системный промпт для выполнения задачи",
+                        required=False
+                    ),
+                    ToolParameter(
+                        name="notify_on_complete",
+                        type="boolean",
+                        description="Отправлять уведомление о результате выполнения задачи (по умолчанию True)",
+                        required=False
                     )
                 ]
             ),
@@ -136,11 +153,53 @@ class SchedulerPlugin(BasePlugin):
         elif interval_seconds:
             return timedelta(seconds=interval_seconds)
         return None
+
+    async def _execute_task(self, name: str, task_prompt: str, system_prompt: Optional[str] = None, notify_on_complete: bool = True):
+        """Выполняет задачу через LLM"""
+        if not self._agent:
+            logger.error("Agent not set for task execution")
+            return
+            
+        try:
+            logger.info("Executing scheduled task '%s': %s", name, task_prompt)
+            
+            # Выполняем задачу через агента
+            response = await self._agent.process_message(
+                message=task_prompt,
+                system_prompt=system_prompt
+            )
+            
+            logger.info("Task '%s' completed: %s", name, response)
+            
+            # Отправляем результат через output_hook только если нужно уведомление
+            if notify_on_complete:
+                await self.output_hook(IOMessage(
+                    type="scheduled_task_result",
+                    content={
+                        "task_name": name,
+                        "task_prompt": task_prompt,
+                        "result": response
+                    }
+                ))
+            
+        except Exception as e:
+            logger.error("Error executing task '%s': %s", name, str(e))
+            # Всегда уведомляем об ошибках
+            await self.output_hook(IOMessage(
+                type="scheduled_task_error",
+                content={
+                    "task_name": name,
+                    "task_prompt": task_prompt,
+                    "error": str(e)
+                }
+            ))
         
     async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> str:
         if tool_name == "schedule_task":
             name = params["name"]
-            message = params["message"]
+            task_prompt = params["task_prompt"]
+            system_prompt = params.get("system_prompt")
+            notify_on_complete = params.get("notify_on_complete", True)
             
             # Определяем время следующего запуска
             date_str = params.get("date")
@@ -152,6 +211,7 @@ class SchedulerPlugin(BasePlugin):
                 delay = next_run - datetime.now(self.timezone)
             else:
                 delay = timedelta(seconds=params.get("delay_seconds", 0))
+                next_run = datetime.now(self.timezone) + delay
                 
             # Определяем интервал повторения
             interval = self._calculate_interval(
@@ -159,19 +219,20 @@ class SchedulerPlugin(BasePlugin):
                 interval_seconds=params.get("interval_seconds")
             )
             
-            # Создаем замыкание для сохранения сообщения
+            # Создаем замыкание для сохранения параметров задачи
             async def task_callback():
-                logger.info("Task '%s' executed with message: %s", name, message)
-                # TODO: Здесь можно добавить обработку сообщения агентом
+                await self._execute_task(name, task_prompt, system_prompt, notify_on_complete)
             
             self.scheduler.schedule_task(name, task_callback, delay, interval)
             
             # Формируем понятное описание
-            result = f"Задача '{name}' запланирована на {next_run.strftime('%d.%m.%Y %H:%M')}"
+            result = f"Задача '{name}' ({task_prompt}) запланирована на {next_run.strftime('%d.%m.%Y %H:%M')}"
             if yearly:
                 result += " (повторяется ежегодно)"
             elif interval:
                 result += f" (повторяется каждые {interval.total_seconds()} секунд)"
+            if not notify_on_complete:
+                result += " (без уведомления о выполнении)"
             return result
             
         elif tool_name == "cancel_task":
