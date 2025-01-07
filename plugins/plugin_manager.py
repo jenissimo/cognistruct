@@ -1,8 +1,8 @@
 import importlib
 import os
-from typing import Dict, List, Optional, Type, Any
+from typing import Dict, List, Optional, Type, Any, Tuple
 
-from .base_plugin import BasePlugin
+from .base_plugin import BasePlugin, IOMessage
 from utils.logging import setup_logger
 
 
@@ -15,6 +15,8 @@ class PluginManager:
     def __init__(self):
         self._plugins: Dict[str, BasePlugin] = {}
         self._plugin_classes: Dict[str, Type[BasePlugin]] = {}
+        self._input_handlers: Dict[str, List[BasePlugin]] = {}  # type -> [plugins]
+        self._output_handlers: Dict[str, List[BasePlugin]] = {}  # type -> [plugins]
 
     def register_plugin_class(self, name: str, plugin_class: Type[BasePlugin]):
         """Регистрирует класс плагина"""
@@ -30,7 +32,20 @@ class PluginManager:
         """
         if name in self._plugins:
             raise ValueError(f"Plugin {name} already registered")
+            
+        # Регистрируем плагин
         self._plugins[name] = plugin
+        
+        # Регистрируем обработчики I/O
+        for input_type in plugin.supported_input_types:
+            if input_type not in self._input_handlers:
+                self._input_handlers[input_type] = []
+            self._input_handlers[input_type].append(plugin)
+            
+        for output_type in plugin.supported_output_types:
+            if output_type not in self._output_handlers:
+                self._output_handlers[output_type] = []
+            self._output_handlers[output_type].append(plugin)
 
     async def load_plugins(self, plugins_dir: str = "plugins"):
         """Загружает плагины из директории"""
@@ -47,7 +62,7 @@ class PluginManager:
                             attr != BasePlugin):
                             self.register_plugin_class(item, attr)
                 except Exception as e:
-                    print(f"Error loading plugin {item}: {e}")
+                    logger.error(f"Error loading plugin {item}: {e}")
 
     def get_plugin(self, name: str) -> Optional[BasePlugin]:
         """Возвращает экземпляр плагина по имени"""
@@ -61,8 +76,74 @@ class PluginManager:
             reverse=True
         )
 
+    def get_input_handlers(self, message_type: str) -> List[BasePlugin]:
+        """Возвращает список плагинов, обрабатывающих входящие сообщения данного типа"""
+        return sorted(
+            self._input_handlers.get(message_type, []),
+            key=lambda x: x.priority,
+            reverse=True
+        )
+
+    def get_output_handlers(self, message_type: str) -> List[BasePlugin]:
+        """Возвращает список плагинов, обрабатывающих исходящие сообщения данного типа"""
+        return sorted(
+            self._output_handlers.get(message_type, []),
+            key=lambda x: x.priority,
+            reverse=True
+        )
+
+    def get_supported_message_types(self) -> Tuple[List[str], List[str]]:
+        """Возвращает списки поддерживаемых типов входящих и исходящих сообщений"""
+        return (
+            sorted(self._input_handlers.keys()),
+            sorted(self._output_handlers.keys())
+        )
+
+    async def process_input(self, message: IOMessage) -> bool:
+        """
+        Обрабатывает входящее сообщение через все подходящие плагины
+        
+        Returns:
+            True если сообщение было обработано, False если нет
+        """
+        handlers = self.get_input_handlers(message.type)
+        for plugin in handlers:
+            try:
+                if await plugin.input_hook(message):
+                    return True
+            except Exception as e:
+                logger.error(f"Error in input hook of plugin {plugin.name}: {e}")
+        return False
+
+    async def process_output(self, message: IOMessage) -> Optional[IOMessage]:
+        """
+        Обрабатывает исходящее сообщение через все подходящие плагины
+        
+        Returns:
+            Модифицированное сообщение или None если сообщение отменено
+        """
+        current_message = message
+        handlers = self.get_output_handlers(message.type)
+        
+        for plugin in handlers:
+            try:
+                result = await plugin.output_hook(current_message)
+                if result is None:
+                    return None  # Сообщение отменено
+                current_message = result
+            except Exception as e:
+                logger.error(f"Error in output hook of plugin {plugin.name}: {e}")
+                
+        return current_message
+
     async def init_plugin(self, name: str, **kwargs) -> BasePlugin:
-        """Инициализирует плагин"""
+        """
+        Инициализирует плагин
+        
+        Args:
+            name: Имя плагина
+            **kwargs: Дополнительные параметры, передаваемые в setup()
+        """
         if name not in self._plugin_classes:
             raise ValueError(f"Plugin {name} not found")
             
@@ -72,16 +153,15 @@ class PluginManager:
         plugin_class = self._plugin_classes[name]
         plugin = plugin_class()
         
-        # Инициализируем базу данных если нужно
-        if kwargs.get('init_db', True):
-            await plugin.init_database(
-                kwargs.get('db_connection_string', "sqlite+aiosqlite:///plugins.db")
-            )
-            
-        # Вызываем setup
-        await plugin.setup()
+        try:
+            # Вызываем setup с переданными параметрами
+            await plugin.setup(**kwargs)
+        except Exception as e:
+            logger.error(f"Failed to setup plugin {name}: {e}")
+            raise
         
-        self._plugins[name] = plugin
+        # Регистрируем плагин
+        self.register_plugin(name, plugin)
         return plugin
 
     async def cleanup(self):
@@ -89,6 +169,8 @@ class PluginManager:
         for plugin in self._plugins.values():
             await plugin.cleanup()
         self._plugins.clear()
+        self._input_handlers.clear()
+        self._output_handlers.clear()
 
     async def execute_rag_hooks(self, query: str) -> Dict[str, Any]:
         """Выполняет RAG-хуки всех плагинов"""
@@ -99,7 +181,7 @@ class PluginManager:
                 if plugin_context:
                     context[plugin.name] = plugin_context
             except Exception as e:
-                print(f"Error in RAG hook of plugin {plugin.name}: {e}")
+                logger.error(f"Error in RAG hook of plugin {plugin.name}: {e}")
         return context
 
     async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Any:

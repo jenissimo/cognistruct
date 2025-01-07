@@ -12,6 +12,7 @@ logger = setup_logger(__name__)
 class Config(BaseModel):
     """Конфигурация приложения"""
     deepseek_api_key: str
+    telegram_token: Optional[str] = None
     plugins_dir: str = "plugins"
     db_url: str = "sqlite+aiosqlite:///plugins.db"
 
@@ -19,12 +20,18 @@ class Config(BaseModel):
     def load(cls) -> "Config":
         """Загружает конфигурацию из переменных окружения"""
         api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            # Пробуем загрузить из файла
-            config_file = Path.home() / ".cognistruct" / "config"
-            if config_file.exists():
-                api_key = config_file.read_text().strip()
+        telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        
+        # Пробуем загрузить из файла
+        config_file = Path.home() / ".cognistruct" / "config"
+        if config_file.exists():
+            lines = config_file.read_text().strip().splitlines()
+            if len(lines) >= 1:
+                api_key = api_key or lines[0].strip()
                 logger.debug("Loaded API key from config file")
+            if len(lines) >= 2:
+                telegram_token = telegram_token or lines[1].strip()
+                logger.debug("Loaded Telegram token from config file")
                 
         if not api_key:
             logger.error("DeepSeek API key not found")
@@ -33,7 +40,10 @@ class Config(BaseModel):
                 "environment variable or create ~/.cognistruct/config file"
             )
             
-        return cls(deepseek_api_key=api_key)
+        return cls(
+            deepseek_api_key=api_key,
+            telegram_token=telegram_token
+        )
 
     def save(self):
         """Сохраняет конфигурацию в файл"""
@@ -41,5 +51,9 @@ class Config(BaseModel):
         config_dir.mkdir(parents=True, exist_ok=True)
         
         config_file = config_dir / "config"
-        config_file.write_text(self.deepseek_api_key)
+        with config_file.open("w") as f:
+            f.write(self.deepseek_api_key + "\n")
+            if self.telegram_token:
+                f.write(self.telegram_token + "\n")
+                
         logger.info("Saved configuration to %s", config_file) 

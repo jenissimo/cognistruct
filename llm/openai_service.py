@@ -173,7 +173,12 @@ class OpenAIService(BaseLLM):
 
         while iteration < max_iterations:
             iteration += 1
-            logger.info(f"Iteration {iteration}, messages: {[f'{m.get('role')}: {m.get('content')[:30]}...' for m in current_messages]}")
+            # Логируем текущую итерацию
+            message_previews = [
+                f"{m.get('role')}: {str(m.get('content', ''))[:30]}..."
+                for m in current_messages
+            ]
+            logger.info(f"Iteration {iteration}, messages: {message_previews}")
 
             try:
                 # Делаем запрос к LLM

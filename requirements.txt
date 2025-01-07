@@ -3,6 +3,8 @@ uvicorn>=0.24.0
 pydantic>=2.5.2
 aiohttp>=3.9.1
 sqlalchemy>=2.0.23
-aiosqlite>=0.19.0
+aiosqlite~=0.19.0
 tzlocal
 tzdata 
+python-telegram-bot
+telegramify-markdown
