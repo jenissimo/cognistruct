@@ -54,3 +54,4 @@ htmlcov/
 .nox/
 .hypothesis/
 .mypy_cache/ 
+.crawl4ai/
