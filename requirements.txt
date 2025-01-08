@@ -17,4 +17,4 @@ numpy
 
 # Internet Plugin
 crawl4ai
-duckduckgo-search
+duckduckgo-search>=4.1.1

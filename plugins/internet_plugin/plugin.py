@@ -1,13 +1,16 @@
 from typing import Dict, Any, List, Optional
 import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
 
-from duckduckgo_search import AsyncDDGS
+from duckduckgo_search import DDGS
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
 from plugins.base_plugin import BasePlugin, PluginMetadata, IOMessage
 from llm.interfaces import ToolSchema, ToolParameter
+
+logger = logging.getLogger(__name__)
 
 
 class InternetPlugin(BasePlugin):
@@ -27,7 +30,7 @@ class InternetPlugin(BasePlugin):
         self.browser_profile_dir = Path(browser_profile_dir)
         self.max_search_results = max_search_results
         self.min_word_count = min_word_count
-        self._ddgs: Optional[AsyncDDGS] = None
+        self._ddgs: Optional[DDGS] = None
         self._crawler: Optional[AsyncWebCrawler] = None
         
     def get_metadata(self) -> PluginMetadata:
@@ -46,15 +49,15 @@ class InternetPlugin(BasePlugin):
         self.browser_profile_dir.parent.mkdir(parents=True, exist_ok=True)
         
         # Инициализируем поисковик
-        self._ddgs = AsyncDDGS()
+        self._ddgs = DDGS()
         
-        # Настраиваем краулер
+        # Настраиваем краулер с базовой конфигурацией
         browser_config = BrowserConfig(
-            verbose=True,
-            headless=True,
-            user_data_dir=str(self.browser_profile_dir),
-            use_persistent_context=True
+            verbose=True,  # Включаем логирование
+            headless=True  # Браузер без GUI
         )
+        
+        # Создаем краулер
         self._crawler = AsyncWebCrawler(config=browser_config)
         await self._crawler.__aenter__()
         
@@ -66,17 +69,34 @@ class InternetPlugin(BasePlugin):
     async def search_web(self, query: str) -> List[Dict[str, Any]]:
         """Поиск в интернете через DuckDuckGo"""
         results = []
-        async for r in self._ddgs.text(query, max_results=self.max_search_results):
-            results.append({
-                "title": r["title"],
-                "link": r["link"],
-                "snippet": r["body"]
-            })
-        return results
+        try:
+            # Используем синхронный API в асинхронном контексте
+            loop = asyncio.get_event_loop()
+            search_results = await loop.run_in_executor(
+                None, 
+                lambda: list(self._ddgs.text(query, max_results=self.max_search_results))
+            )
+            
+            for r in search_results:
+                # Проверяем наличие всех необходимых полей
+                result = {
+                    "title": r.get("title", "No title"),
+                    "link": r.get("href", r.get("url", "No link")),  # Пробуем href или url
+                    "snippet": r.get("body", r.get("snippet", "No description"))  # Пробуем body или snippet
+                }
+                results.append(result)
+                
+            logger.info(f"Found {len(results)} results for query: {query}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Search failed: {str(e)}")
+            return []
         
     async def crawl_url(self, url: str) -> Optional[Dict[str, Any]]:
         """Извлечение контента с веб-страницы"""
         try:
+            # Конфигурация для конкретного запроса
             run_config = CrawlerRunConfig(
                 word_count_threshold=self.min_word_count,  # Фильтруем короткие блоки
                 exclude_external_links=False,  # Сохраняем внешние ссылки
