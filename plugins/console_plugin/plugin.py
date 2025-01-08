@@ -155,6 +155,7 @@ class ConsolePlugin(BasePlugin):
         current_tool = None
         first_chunk = True
         sections = []  # Список секций для отображения
+        need_refresh = False
         
         def render_sections():
             """Рендерит все секции в одну панель"""
@@ -183,13 +184,17 @@ class ConsolePlugin(BasePlugin):
         # Создаем начальную секцию для текста
         sections.append({"type": "text", "content": ""})
         
-        with Live(
+        # Создаем единую Live панель
+        live_panel = Live(
             render_sections(),
             console=self.console,
             refresh_per_second=self.refresh_rate,
             vertical_overflow="visible",
-            auto_refresh=True
-        ) as live:
+            auto_refresh=True,  # Включаем автообновление
+            transient=True  # Очищаем промежуточные состояния
+        )
+        
+        with live_panel:
             async for chunk in stream:
                 if first_chunk and not chunk.delta:
                     first_chunk = False
@@ -197,27 +202,34 @@ class ConsolePlugin(BasePlugin):
                     
                 if chunk.delta:
                     current_content += chunk.delta
-                    # Обновляем последнюю текстовую секцию
+                    # Обновляем только последнюю текстовую секцию
                     for section in reversed(sections):
                         if section["type"] == "text":
                             section["content"] += chunk.delta
                             break
-                    live.update(render_sections())
+                    need_refresh = True
                     first_chunk = False
                 
                 if chunk.tool_call and not current_tool:
                     current_tool = chunk.tool_call
                     sections.append({"type": "tool", "content": current_tool})
                     sections.append({"type": "text", "content": ""})
-                    live.update(render_sections())
+                    live_panel.update(render_sections())  # Обновляем сразу при добавлении инструмента
                 
                 if chunk.tool_result:
                     sections.append({"type": "result", "content": chunk.tool_result})
                     sections.append({"type": "text", "content": ""})
                     current_tool = None
-                    live.update(render_sections())
-            
-            return current_content
+                    live_panel.update(render_sections())  # Обновляем сразу при добавлении результата
+                
+                # Обновляем только если накопились изменения и прошло достаточно времени
+                if need_refresh and not (chunk.tool_call or chunk.tool_result):
+                    live_panel.update(render_sections())
+                    need_refresh = False
+        
+        # После завершения Live выводим финальную версию
+        self.console.print(render_sections())
+        return current_content
         
     async def handle_regular_stream(self, message: str, stream: Any):
         """Обработка стрима без Markdown"""

@@ -60,7 +60,7 @@ async def main():
         
         # Подключаем обработчик к консоли с предустановленными параметрами
         console.set_message_handler(
-            partial(agent.handle_message, system_prompt=SYSTEM_PROMPT, stream=False)
+            partial(agent.handle_message, system_prompt=SYSTEM_PROMPT, stream=True)
         )
         
         # Инициализируем плагины
