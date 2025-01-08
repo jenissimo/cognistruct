@@ -259,31 +259,62 @@ scheduler = SchedulerPlugin(
 from agents import BaseAgent
 from llm import LLMRouter
 from plugins.console_plugin import ConsolePlugin
+from plugins.example_plugin import CalculatorPlugin
+from functools import partial
+
+# Конфигурация LLM
+LLM_CONFIG = {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "api_key": "YOUR_API_KEY"
+}
+
+# Системный промпт
+SYSTEM_PROMPT = """
+Ты - полезный ассистент. Для ЛЮБЫХ математических вычислений используй инструмент calculate.
+НИКОГДА не пытайся вычислять самостоятельно.
+""".strip()
 
 # Инициализация LLM
-router = LLMRouter()
-llm = router.create_instance(
-    provider="deepseek",
-    api_key="YOUR_API_KEY",
-    model="deepseek-chat"
+llm = LLMRouter().create_instance(**LLM_CONFIG)
+
+# Создание агента (без автозагрузки плагинов)
+agent = BaseAgent(llm=llm, auto_load_plugins=False)
+
+# Создание плагинов
+calculator = CalculatorPlugin()
+console = ConsolePlugin(
+    prompt="👤 ",
+    exit_command="exit",
+    exit_message="\n👋 До свидания!",
+    use_markdown=True,
+    use_emojis=True,
+    refresh_rate=10
 )
 
-# Создание агента
-agent = BaseAgent(llm=llm)
+# Подключаем обработчик к консоли
+console.set_message_handler(
+    partial(agent.handle_message, system_prompt=SYSTEM_PROMPT, stream=True)
+)
 
-# Создание и настройка плагинов
-console = ConsolePlugin(use_markdown=True)
-memory = ShortTermMemoryPlugin(max_messages=15)
+# Инициализируем плагины
+await calculator.setup()
+await console.setup()
 
 # Регистрация плагинов
+agent.plugin_manager.register_plugin("calculator", calculator)
 agent.plugin_manager.register_plugin("console", console)
-agent.plugin_manager.register_plugin("memory", memory)
 
-# Запуск агента
-await agent.start()
-
-# Запуск консольного интерфейса
-await console.start()
+try:
+    # Запуск агента и консоли
+    await agent.start()
+    await console.start()
+except Exception as e:
+    print(f"\n❌ Неожиданная ошибка: {str(e)}")
+    raise
+finally:
+    # Очистка ресурсов
+    await agent.cleanup()
 ```
 
 ## Разработка плагинов
