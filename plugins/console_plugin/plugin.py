@@ -95,6 +95,59 @@ class ConsolePlugin(BasePlugin):
             content = content.replace("🤖", "Bot:")
             
         return content
+    
+    def print_tool_call(self, tool_call: Any, return_str: bool = False) -> Optional[str]:
+        """
+        Форматирует и печатает вызов инструмента
+        
+        Args:
+            tool_call: Информация о вызове инструмента
+            return_str: Вернуть строку вместо печати
+            
+        Returns:
+            str если return_str=True, иначе None
+        """
+        # Формируем базовый текст
+        tool_name = tool_call.tool if hasattr(tool_call, 'tool') else str(tool_call)
+        prefix = "🔧 " if self.use_emojis else ""
+        text = f"> {prefix}**Использую инструмент**: {tool_name}..."
+        
+        if return_str:
+            return text
+            
+        # Печатаем с нужным форматированием
+        if self.use_markdown:
+            self.console.print(Markdown(text), style="yellow")
+        else:
+            # Убираем markdown-разметку для plain text
+            plain_text = text.replace('**', '')
+            self.console.print(plain_text, style="yellow")
+            
+    def print_tool_result(self, result: str, return_str: bool = False) -> Optional[str]:
+        """
+        Форматирует и печатает результат инструмента
+        
+        Args:
+            result: Результат работы инструмента
+            return_str: Вернуть строку вместо печати
+            
+        Returns:
+            str если return_str=True, иначе None
+        """
+        # Формируем базовый текст
+        prefix = "✅ " if self.use_emojis else ""
+        text = f"> {prefix}**Результат**: {result}"
+        
+        if return_str:
+            return text
+            
+        # Печатаем с нужным форматированием
+        if self.use_markdown:
+            self.console.print(Markdown(text), style="green")
+        else:
+            # Убираем markdown-разметку для plain text
+            plain_text = text.replace('**', '')
+            self.console.print(plain_text, style="green")
 
     async def handle_markdown_stream(self, message: str, stream: Any):
         """Обработка стрима с поддержкой Markdown"""
@@ -112,12 +165,12 @@ class ConsolePlugin(BasePlugin):
                 elif section["type"] == "tool":
                     rendered.append(Text())  # Пустая строка перед инструментом
                     rendered.append(
-                        Markdown(f"> 🔧 **Использую инструмент**: {section['content']}...")
+                        Markdown(self.print_tool_call(section['content'], return_str=True))
                     )
                 elif section["type"] == "result":
                     rendered.append(Text())  # Пустая строка перед результатом
                     rendered.append(
-                        Markdown(f"> ✅ **Результат**: {section['content']}")
+                        Markdown(self.print_tool_result(section['content'], return_str=True))
                     )
             
             return Panel(
@@ -133,17 +186,11 @@ class ConsolePlugin(BasePlugin):
         with Live(
             render_sections(),
             console=self.console,
-            refresh_per_second=10,
+            refresh_per_second=self.refresh_rate,
             vertical_overflow="visible",
             auto_refresh=True
         ) as live:
             async for chunk in stream:
-                # Отладочный вывод для каждого чанка
-                print(f"\n[DEBUG] Chunk: delta={bool(chunk.delta)}, "
-                      f"tool_call={bool(chunk.tool_call)}, "
-                      f"tool_result={bool(chunk.tool_result)}", 
-                      file=sys.stderr)
-                
                 if first_chunk and not chunk.delta:
                     first_chunk = False
                     continue
@@ -160,14 +207,11 @@ class ConsolePlugin(BasePlugin):
                 
                 if chunk.tool_call and not current_tool:
                     current_tool = chunk.tool_call
-                    print(f"\n[DEBUG] Tool call: {current_tool.tool} with params: {current_tool.params}",
-                          file=sys.stderr)
-                    sections.append({"type": "tool", "content": current_tool.tool})
+                    sections.append({"type": "tool", "content": current_tool})
                     sections.append({"type": "text", "content": ""})
                     live.update(render_sections())
                 
                 if chunk.tool_result:
-                    print(f"\n[DEBUG] Tool result: {chunk.tool_result}", file=sys.stderr)
                     sections.append({"type": "result", "content": chunk.tool_result})
                     sections.append({"type": "text", "content": ""})
                     current_tool = None
@@ -198,12 +242,11 @@ class ConsolePlugin(BasePlugin):
             
             if chunk.tool_call and not current_tool:
                 current_tool = chunk.tool_call
-                self.console.print(f"\n\n> Использую инструмент: {current_tool.tool}...", 
-                                 style="yellow")
+                self.print_tool_call(current_tool)
             
             if chunk.tool_result:
+                self.print_tool_result(chunk.tool_result)
                 current_tool = None
-                self.console.print(f"\n> Результат: {chunk.tool_result}", style="green")
         
         print("\n")
         return current_content
@@ -232,19 +275,23 @@ class ConsolePlugin(BasePlugin):
         # Для остальных типов сообщений
         if message.type in ["message", "text"]:
             prefix = "🤖 " if self.use_emojis else "Bot: "
-            content = self.format_output(message.content)
             
-            # Создаем консоль с прокруткой
-            console = Console(height=20, force_terminal=True)
+            # Извлекаем контент и форматируем его
+            content = message.content.content if hasattr(message.content, 'content') else str(message.content)
+            content = self.format_output(content)
             
-            # Добавляем отступы
-            print()
+            # Если есть tool_calls в LLMResponse, выводим их перед основным контентом
+            if hasattr(message.content, 'tool_calls') and message.content.tool_calls:
+                for tool_call in message.content.tool_calls:
+                    self.print_tool_call(tool_call)
+                    # Результат инструмента уже включен в основной контент
+            
+            # Выводим основной контент
             if self.use_markdown:
-                console.print(Panel(
+                self.console.print(Panel(
                     Markdown(content),
                     title=prefix.strip(),
-                    border_style="blue",
-                    height=20
+                    border_style="blue"
                 ))
             else:
                 print(f"{prefix}{content}")

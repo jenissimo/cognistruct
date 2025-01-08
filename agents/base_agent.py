@@ -13,7 +13,7 @@ logger = setup_logger(__name__)
 class BaseAgent:
     """Базовый класс для всех агентов"""
 
-    def __init__(self, llm: BaseLLM, auto_load_plugins: bool = True):
+    def __init__(self, llm: BaseLLM, auto_load_plugins: bool = False):
         """
         Инициализация агента
         
@@ -154,7 +154,7 @@ class BaseAgent:
             **kwargs: Дополнительные параметры для LLM
             
         Returns:
-            - При stream=False: строка с ответом
+            - При stream=False: LLMResponse с контентом и информацией о вызовах инструментов
             - При stream=True: AsyncGenerator[StreamChunk, None] для потоковой генерации
         """
         # Создаем объект сообщения
@@ -240,7 +240,7 @@ class BaseAgent:
                 # Создаем объект ответного сообщения
                 response_message = IOMessage(
                     type="text",
-                    content=response.content
+                    content=response  # Передаем весь LLMResponse
                 )
                 
                 # Выполняем output_hooks
@@ -248,8 +248,58 @@ class BaseAgent:
                     if hasattr(plugin, 'output_hook'):
                         await plugin.output_hook(response_message)
                 
-                return response.content
+                return response  # Возвращаем весь LLMResponse
                 
         except Exception as e:
             logger.exception("Error processing message")
+            raise 
+
+    async def handle_message(
+        self,
+        message: IOMessage,
+        system_prompt: Optional[str] = None,
+        stream: bool = False,
+        **kwargs
+    ) -> None:
+        """
+        Базовый обработчик сообщений. Может быть переопределен в наследниках для кастомной логики.
+        
+        Args:
+            message: Входящее сообщение
+            system_prompt: Системный промпт (опционально)
+            stream: Использовать потоковую генерацию
+            **kwargs: Дополнительные параметры для LLM
+        """
+        try:
+            response = await self.process_message(
+                message=message.content,
+                system_prompt=system_prompt,
+                stream=stream,
+                **kwargs
+            )
+            
+            # Для не-стрим ответов создаем обычное сообщение
+            if not hasattr(response, '__aiter__'):
+                await self.plugin_manager.process_output(IOMessage(
+                    content=response,
+                    type="text",
+                    source="agent"
+                ))
+                return
+                
+            # Для стрим-ответов создаем стрим-сообщение
+            await self.plugin_manager.process_output(IOMessage(
+                content=response,
+                type="stream",
+                source="agent",
+                stream=response
+            ))
+            
+        except Exception as e:
+            # В случае ошибки отправляем сообщение об ошибке
+            await self.plugin_manager.process_output(IOMessage(
+                content=f"Произошла ошибка: {str(e)}",
+                type="error",
+                source="agent"
+            ))
             raise 
