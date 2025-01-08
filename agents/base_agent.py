@@ -257,49 +257,24 @@ class BaseAgent:
     async def handle_message(
         self,
         message: IOMessage,
-        system_prompt: Optional[str] = None,
-        stream: bool = False,
-        **kwargs
-    ) -> None:
-        """
-        Базовый обработчик сообщений. Может быть переопределен в наследниках для кастомной логики.
+        system_prompt: str = None,
+        stream: bool = False
+    ) -> Optional[str]:
+        """Обработка входящего сообщения"""
+        logger.debug("BaseAgent.handle_message called")
         
-        Args:
-            message: Входящее сообщение
-            system_prompt: Системный промпт (опционально)
-            stream: Использовать потоковую генерацию
-            **kwargs: Дополнительные параметры для LLM
-        """
         try:
-            response = await self.process_message(
-                message=message.content,
-                system_prompt=system_prompt,
-                stream=stream,
-                **kwargs
-            )
+            # Обрабатываем через плагины
+            logger.debug("Processing input through plugins")
+            await self.plugin_manager.process_input(message)
             
-            # Для не-стрим ответов создаем обычное сообщение
-            if not hasattr(response, '__aiter__'):
-                await self.plugin_manager.process_output(IOMessage(
-                    content=response,
-                    type="text",
-                    source="agent"
-                ))
-                return
-                
-            # Для стрим-ответов создаем стрим-сообщение
-            await self.plugin_manager.process_output(IOMessage(
-                content=response,
-                type="stream",
-                source="agent",
-                stream=response
-            ))
+            # Генерируем ответ через LLM
+            logger.debug("Generating response through LLM")
+            response = await self.process_message(message.content, system_prompt, stream)
+            
+            logger.debug("Message processing completed")
+            return response
             
         except Exception as e:
-            # В случае ошибки отправляем сообщение об ошибке
-            await self.plugin_manager.process_output(IOMessage(
-                content=f"Произошла ошибка: {str(e)}",
-                type="error",
-                source="agent"
-            ))
+            logger.error(f"Error in handle_message: {e}", exc_info=True)
             raise 

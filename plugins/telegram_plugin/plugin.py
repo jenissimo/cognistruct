@@ -2,6 +2,7 @@ import os
 import logging
 from typing import Dict, Any, Optional
 from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, filters
+import time
 
 from plugins.base_plugin import BasePlugin, IOMessage, PluginMetadata
 from .bot import TelegramBot
@@ -20,12 +21,13 @@ logger = logging.getLogger(__name__)
 class TelegramPlugin(BasePlugin):
     """Telegram плагин для CogniStruct"""
     
-    def __init__(self):
+    def __init__(self, user_id: str = None):
         super().__init__()
         self.bot = None
         self.db = None
         self.handlers = None
-        self.message_handler = None  # Добавляем обработчик сообщений
+        self._current_chat_id = None  # Текущий чат для обработки
+        self.user_id = user_id  # ID пользователя для привязки
         
     def get_metadata(self) -> PluginMetadata:
         return PluginMetadata(
@@ -35,12 +37,22 @@ class TelegramPlugin(BasePlugin):
             priority=10
         )
         
+    def set_message_handler(self, handler):
+        """Устанавливает обработчик сообщений"""
+        if self.handlers:
+            self.handlers.message_handler = handler
+        else:
+            raise RuntimeError("TelegramPlugin not initialized. Call setup() first")
+        
     async def setup(self, token: str = None):
         """
         Инициализация плагина
         
         Args:
             token: Telegram Bot токен. Если не указан, берется из TELEGRAM_BOT_TOKEN
+            
+        Returns:
+            dict: Результат инициализации с информацией о статусе чата
         """
         # Регистрируем типы сообщений
         self.register_input_type("telegram_message")
@@ -58,21 +70,39 @@ class TelegramPlugin(BasePlugin):
         await self.db.connect()
         
         self.bot = TelegramBot(self.token)
-        self.handlers = TelegramHandlers(self.db)
+        self.handlers = TelegramHandlers(self.db, self.bot)
         
         # Регистрируем обработчики
         self.bot.add_handler(CommandHandler("start", self.handlers.handle_start))
         self.bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handlers.handle_message))
         self.bot.add_handler(CallbackQueryHandler(self.handlers.handle_callback_query))
         
-        # Устанавливаем обработчик сообщений
-        self.handlers.message_handler = self.message_handler
-        
         # Инициализируем и запускаем бота
         await self.bot.start()
         await self.bot.start_polling()
         
+        result = {"status": "initialized"}
+        
+        # Если задан user_id, проверяем/создаем привязку чата
+        if self.user_id:
+            chat_id = await self.check_chat_link(self.user_id)
+            if chat_id:
+                logger.info(f"Found existing chat link: {chat_id}")
+                self._current_chat_id = chat_id
+                result.update({
+                    "chat_status": "linked",
+                    "chat_id": chat_id
+                })
+            else:
+                key = await self.generate_key(self.user_id)
+                logger.info(f"Generated new key for user {self.user_id}: {key}")
+                result.update({
+                    "chat_status": "not_linked",
+                    "key": key
+                })
+        
         logger.info("Telegram bot initialized and polling started")
+        return result
         
     async def cleanup(self):
         """Очистка ресурсов"""
@@ -92,74 +122,94 @@ class TelegramPlugin(BasePlugin):
                 )
                 return True
                 
-            message.metadata["user_id"] = chat_link["user_id"]
+            # Сохраняем chat_id для текущего запроса
+            self._current_chat_id = chat_id
             return False
             
         return False
         
     async def output_hook(self, message: IOMessage) -> Optional[IOMessage]:
-        """Обработка исходящих сообщений"""
-        if message.type == "message":
-            chat_id = message.metadata.get("chat_id")
-            if chat_id:
-                try:
-                    # Форматируем сообщение
-                    boxes = await format_message(message.content)
+        """Обработка исходящих сообщений"""        
+        # Используем сохраненный chat_id
+        if not self._current_chat_id:
+            logger.warning("No current chat_id")
+            return message
+            
+        chat_id = self._current_chat_id
+        logger.debug(f"====== Output hook called with message: {message}")
+        
+        try:
+            # Обрабатываем стриминг
+            if message.type == "stream":
+                current_content = ""
+                typing_interval = 4.0
+                last_typing = 0
+                
+                async for chunk in message.stream:
+                    # Обновляем статус набора с интервалом
+                    current_time = time.time()
+                    if current_time - last_typing >= typing_interval:
+                        await self.send_typing(chat_id)
+                        last_typing = current_time
+                        
+                    if chunk.delta:
+                        current_content += chunk.delta
+                        
+                # Отправляем финальное сообщение
+                boxes = await format_message(current_content)
+                for item in boxes:
+                    await send_content_box(self.bot, chat_id, item)
                     
-                    # Отправляем каждую часть
-                    for item in boxes:
-                        await send_content_box(self.bot, chat_id, item)
-                                
-                except Exception as e:
-                    logger.error(f"Error processing message: {e}")
-                    # В случае ошибки пробуем отправить без форматирования
-                    await self.bot.send_message(
-                        chat_id=chat_id,
-                        text=message.content
-                    )
+            # Обрабатываем обычный текст
+            elif message.type == "text":
+                # Извлекаем текст из LLMResponse
+                content = message.content.content if hasattr(message.content, 'content') else str(message.content)
+                boxes = await format_message(content)
+                for item in boxes:
+                    await send_content_box(self.bot, chat_id, item)
                     
-        elif message.type == "action":
-            chat_id = message.metadata.get("chat_id")
-            if chat_id:
+            # Обрабатываем действия (typing, etc)
+            elif message.type == "action":
                 await self.bot.send_chat_action(
                     chat_id=chat_id,
                     action=message.content
                 )
                 
-        elif message.type == "confirmation_request":
-            chat_id = message.metadata["chat_id"]
-            expires_in = message.metadata.get("expires_in", 3600)
-            
-            # Создаем запрос на подтверждение
-            confirmation_id = await self.db.create_confirmation(
-                message=message.content,
-                chat_id=chat_id,
-                callback_data=message.metadata.get("callback_data", ""),
-                expires_in=expires_in
-            )
-            
-            keyboard = [
-                [
-                    {"text": "✅ Подтвердить", "callback_data": f"confirm_{confirmation_id}"},
-                    {"text": "❌ Отклонить", "callback_data": f"reject_{confirmation_id}"}
+            # Обрабатываем запросы на подтверждение
+            elif message.type == "confirmation_request":
+                expires_in = message.metadata.get("expires_in", 3600)
+                
+                # Создаем запрос на подтверждение
+                confirmation_id = await self.db.create_confirmation(
+                    message=message.content,
+                    chat_id=chat_id,
+                    callback_data=message.metadata.get("callback_data", ""),
+                    expires_in=expires_in
+                )
+                
+                keyboard = [
+                    [
+                        {"text": "✅ Подтвердить", "callback_data": f"confirm_{confirmation_id}"},
+                        {"text": "❌ Отклонить", "callback_data": f"reject_{confirmation_id}"}
+                    ]
                 ]
-            ]
-            
+                
+                await self.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"Требуется подтверждение:\n\n{message.content}",
+                    reply_markup={"inline_keyboard": keyboard}
+                )
+                    
+        except Exception as e:
+            logger.error(f"Error processing message: {e}", exc_info=True)
+            # В случае ошибки пробуем отправить без форматирования
+            content = message.content.content if hasattr(message.content, 'content') else str(message.content)
             await self.bot.send_message(
                 chat_id=chat_id,
-                text=f"Требуется подтверждение:\n\n{message.content}",
-                reply_markup={"inline_keyboard": keyboard}
+                text=content
             )
-                
-        return message 
-        
-    async def message_handler(self, message: IOMessage):
-        """Обработчик сообщений от Telegram"""
-        # Передаем сообщение в основной обработчик плагина
-        if self.input_handler:
-            await self.input_handler(message)
-        else:
-            logger.warning("Input handler not set") 
+                    
+        return message
         
     async def check_chat_link(self, user_id: str) -> Optional[str]:
         """
@@ -279,3 +329,13 @@ class TelegramPlugin(BasePlugin):
         )
         
         return confirmation_id 
+        
+    async def send_welcome_message(self, chat_id: str):
+        """Отправляет приветственное сообщение"""
+        await self.output_hook(
+            IOMessage(
+                type="text",
+                content="Привет! Я готов к работе. Отправь мне сообщение, и я постараюсь помочь.",
+                metadata={"chat_id": chat_id}
+            )
+        ) 

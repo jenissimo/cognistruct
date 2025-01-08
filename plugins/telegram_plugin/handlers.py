@@ -10,8 +10,9 @@ logger = logging.getLogger(__name__)
 class TelegramHandlers:
     """Обработчики команд и сообщений Telegram"""
     
-    def __init__(self, db: TelegramDatabase):
+    def __init__(self, db: TelegramDatabase, bot: 'TelegramBot'):
         self.db = db
+        self.bot = bot
         self.message_handler: Optional[Callable[[IOMessage], Awaitable[None]]] = None
         
     async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,11 +84,16 @@ class TelegramHandlers:
             
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка входящих сообщений"""
+        logger.debug("Received message in handle_message")
+        
         if not update.message or not update.message.text:
+            logger.warning("No message or text in update")
             return
             
         chat_id = update.effective_chat.id
         text = update.message.text
+        
+        logger.debug(f"Processing message: {text[:50]}...")
         
         # Создаем IOMessage
         message = IOMessage(
@@ -100,19 +106,19 @@ class TelegramHandlers:
             }
         )
         
-        # Проверяем привязку
-        chat_link = await self.db.get_chat_link(str(chat_id))
-        if not chat_link:
-            await update.message.reply_text(
-                "Чат не привязан. Используйте /start с секретным ключом"
-            )
-            return
-            
-        # Добавляем user_id в метаданные
-        message.metadata["user_id"] = chat_link["user_id"]
+        # Отправляем индикатор набора
+        await self.bot.send_chat_action(chat_id=chat_id, action="typing")
         
-        # Передаем сообщение обработчику
+        # Вызываем обработчик если он установлен
         if self.message_handler:
-            await self.message_handler(message)
+            try:
+                logger.debug("Calling message handler")
+                await self.message_handler(message)
+                logger.debug("Message handler completed")
+            except Exception as e:
+                logger.error(f"Error processing message: {e}", exc_info=True)
+                await update.message.reply_text(
+                    "Произошла ошибка при обработке сообщения. Попробуйте позже."
+                )
         else:
             logger.warning("Message handler not set") 

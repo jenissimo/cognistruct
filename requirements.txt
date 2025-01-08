@@ -8,7 +8,7 @@ sqlalchemy
 aiosqlite
 tzlocal
 tzdata 
-python-telegram-bot
+python-telegram-bot[callback-data]
 telegramify-markdown
 openai
 rich
