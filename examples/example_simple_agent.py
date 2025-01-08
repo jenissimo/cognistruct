@@ -1,13 +1,14 @@
 import os
 import sys
 import asyncio
+import logging
 from typing import Optional
 from functools import partial
 
 # Добавляем родительскую директорию в PYTHONPATH
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import Config
+from utils import Config, init_logging, setup_logger, get_timezone
 from llm import LLMRouter
 from agents.base_agent import BaseAgent
 from plugins.example_plugin.plugin import CalculatorPlugin
@@ -32,6 +33,7 @@ SYSTEM_PROMPT = """
 НИКОГДА не пытайся вычислять самостоятельно.
 """.strip()
 
+#init_logging(level=logging.DEBUG)
 
 async def main():
     """Точка входа"""

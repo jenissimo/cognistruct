@@ -164,15 +164,14 @@ class ConsolePlugin(BasePlugin):
                 if section["type"] == "text":
                     rendered.append(Markdown(section["content"]))
                 elif section["type"] == "tool":
-                    rendered.append(Text())  # Пустая строка перед инструментом
                     rendered.append(
                         Markdown(self.print_tool_call(section['content'], return_str=True))
                     )
                 elif section["type"] == "result":
-                    rendered.append(Text())  # Пустая строка перед результатом
                     rendered.append(
                         Markdown(self.print_tool_result(section['content'], return_str=True))
                     )
+                    rendered.append(Text())
             
             return Panel(
                 Group(*rendered),
