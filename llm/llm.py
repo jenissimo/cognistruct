@@ -29,7 +29,7 @@ class LLMRouter:
         """Возвращает экземпляр LLM по имени провайдера"""
         return self._instances.get(provider)
 
-    def create_instance(self, provider: str, api_key: str, model: Optional[str] = None) -> BaseLLM:
+    def create_instance(self, provider: str, api_key: str, model: Optional[str] = None, temperature: Optional[float] = None) -> BaseLLM:
         """
         Создает новый экземпляр LLM
         
@@ -37,6 +37,7 @@ class LLMRouter:
             provider: Имя провайдера (openai, deepseek, ollama или кастомный)
             api_key: API ключ (для Ollama можно пустой)
             model: Название модели (обязательно для Ollama, опционально для других)
+            temperature: Температура генерации (0.0 - 1.0)
         """
         if provider not in self._providers:
             raise ValueError(f"Unknown provider: {provider}")
@@ -47,7 +48,8 @@ class LLMRouter:
             name=provider_config.name,
             model=model or provider_config.model,  # Используем указанную модель или дефолтную
             api_base=provider_config.api_base,
-            api_key=api_key
+            api_key=api_key,
+            temperature=temperature if temperature is not None else provider_config.temperature
         )
             
         # Создаем экземпляр сервиса

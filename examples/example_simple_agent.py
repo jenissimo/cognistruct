@@ -25,6 +25,7 @@ LLM_CONFIG = {
      "provider": "deepseek",
      "model": "deepseek-chat",
      "api_key": Config.load().deepseek_api_key,
+     "temperature": 0.5  # Добавляем температуру (0.0 - более точные ответы, 1.0 - более креативные)
 }
 
 # Системный промпт для агента

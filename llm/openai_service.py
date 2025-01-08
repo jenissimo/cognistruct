@@ -20,6 +20,7 @@ class OpenAIProvider:
     model: str
     api_base: str
     api_key: Optional[str] = None  # Может быть None для некоторых провайдеров
+    temperature: float = 0.7  # Добавляем температуру по умолчанию
 
 
 # Предопределенные провайдеры
@@ -27,21 +28,24 @@ OPENAI = OpenAIProvider(
     name="openai",
     model="gpt-3.5-turbo",
     api_base="https://api.openai.com/v1",
-    api_key=""  # Заполняется из конфига
+    api_key="",  # Заполняется из конфига
+    temperature=0.7
 )
 
 DEEPSEEK = OpenAIProvider(
     name="deepseek",
     model="deepseek-chat",
     api_base="https://api.deepseek.com/v1",
-    api_key=""  # Заполняется из конфига
+    api_key="",  # Заполняется из конфига
+    temperature=0.7
 )
 
 OLLAMA = OpenAIProvider(
     name="ollama",
     model="",  # Заполняется пользователем
     api_base="http://localhost:11434/v1",
-    api_key=None  # Не требуется для локального Ollama
+    api_key=None,  # Не требуется для локального Ollama
+    temperature=0.7
 )
 
 
