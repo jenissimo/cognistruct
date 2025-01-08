@@ -23,6 +23,10 @@ LLM_PROVIDER = "deepseek"
 LLM_MODEL = "deepseek-chat"
 LLM_API_KEY = config.deepseek_api_key
 
+LLM_PROVIDER = "ollama"
+LLM_MODEL = "qwen2.5"
+LLM_API_KEY = "ollama"
+
 # Системный промпт для агента
 SYSTEM_PROMPT = """
 Ты - полезный ассистент с краткосрочной памятью. Используй контекст из предыдущих сообщений, чтобы давать более релевантные ответы.
@@ -37,7 +41,7 @@ User: Какой язык программирования мы обсуждал
 Assistant: Судя по нашей предыдущей беседе, мы обсуждали Python в контексте асинхронного программирования.
 """.strip()
 
-init_logging(level=logging.INFO)
+#init_logging(level=logging.DEBUG)
 logger = setup_logger(__name__)
 
 
@@ -53,12 +57,17 @@ async def handle_console_input(user_input: str, agent: BaseAgent) -> bool:
         return False
         
     try:
-        # Обрабатываем сообщение через агента с учетом контекста
-        response = await agent.process_message(
-            message=user_input,
-            system_prompt=SYSTEM_PROMPT
+        # Создаем объект сообщения
+        message = IOMessage(
+            type="text",
+            content=user_input,
+            source="console"
         )
-        print(f"\n🤖 {response}\n")
+        
+        # Получаем консольный плагин и передаем сообщение
+        console = agent.plugin_manager.get_plugin("console")
+        if console and console.message_handler:
+            await console.message_handler(message)
         
     except Exception as e:
         print(f"\n❌ Произошла ошибка: {str(e)}\n")
@@ -86,21 +95,38 @@ async def setup_agent(llm) -> BaseAgent:
         exit_command="exit",
         exit_message="\n👋 До свидания!",
         use_markdown=True,
-        use_emojis=True
+        use_emojis=True,
+        refresh_rate=10  # Частота обновления стриминга
     )
     
     # Устанавливаем обработчик сообщений для консоли
     async def handle_message(message: IOMessage):
         try:
-            await agent.process_message(
+            # Обрабатываем сообщение через агента
+            response = await agent.process_message(
                 message=message.content,
-                system_prompt=SYSTEM_PROMPT
+                system_prompt=SYSTEM_PROMPT,
+                #stream=True  # Включаем стриминг
             )
+            
+            # Для не-стрим ответов ничего не делаем, так как base_agent уже вызвал output_hook
+            if not hasattr(response, '__aiter__'):
+                return
+            
+            # Для стрим-ответов обрабатываем через output_hook
+            await console.output_hook(IOMessage(
+                content=response,
+                type="stream",
+                source="agent",
+                stream=response
+            ))
+            
         except Exception as e:
             logger.exception("Error processing message")
             await console.output_hook(IOMessage(
+                content=f"Произошла ошибка: {str(e)}",
                 type="error",
-                content=f"Произошла ошибка: {str(e)}"
+                source="agent"
             ))
     
     console.set_message_handler(handle_message)

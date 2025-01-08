@@ -1,11 +1,11 @@
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union, AsyncGenerator
 from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from llm.interfaces import BaseLLM, LLMResponse, ToolSchema
+from llm.interfaces import BaseLLM, LLMResponse, ToolSchema, StreamChunk, ToolCall
 from utils.logging import setup_logger
 from utils.schema_converter import convert_tool_schema
 
@@ -148,95 +148,225 @@ class OpenAIService(BaseLLM):
         messages: List[Dict[str, Any]],
         tools: Optional[List[ToolSchema]] = None,
         temperature: float = 0.7,
-        response_format: Optional[str] = None,
-        max_iterations: int = 5,
+        stream: bool = False,
         **kwargs
-    ) -> LLMResponse:
+    ) -> Union[LLMResponse, AsyncGenerator[StreamChunk, None]]:
         """Генерирует ответ, при необходимости выполняя инструменты"""
-
+        
         request_params = {
             "model": self.provider.model,
             "messages": messages,
             "temperature": temperature,
-            **kwargs  # Добавляем дополнительные параметры
+            "stream": stream,
+            **kwargs
         }
 
         if tools:
             request_params["tools"] = convert_tool_schema(tools)
-            request_params["tool_choice"] = "auto"  # Разрешаем модели самостоятельно вызывать функции
+            request_params["tool_choice"] = "auto"
 
-        if response_format:
-            request_params["response_format"] = response_format
+        if stream:
+            return self._generate_stream_response(request_params)
+        else:
+            return await self._generate_regular_response(request_params)
 
-        iteration = 0
-        current_messages = messages.copy()
+    async def _generate_stream_response(
+        self, 
+        request_params: Dict[str, Any]
+    ) -> AsyncGenerator[StreamChunk, None]:
+        """Генерирует потоковый ответ"""
+        try:
+            logger.info("Starting stream generation with params: %s", request_params)
+            stream = await self.client.chat.completions.create(**request_params)
+            
+            current_content = ""
+            current_tool = None
+            
+            async for chunk in stream:
+                logger.info("Received chunk: %s", chunk)
+                delta = chunk.choices[0].delta
+                logger.info("Delta content: %s", delta.content if hasattr(delta, "content") else None)
+                logger.info("Delta tool_calls: %s", delta.tool_calls if hasattr(delta, "tool_calls") else None)
+                
+                # Обработка текстового контента
+                if hasattr(delta, "content") and delta.content:
+                    current_content += delta.content
+                    logger.info("Yielding text chunk: %s", delta.content)
+                    yield StreamChunk(
+                        content=current_content,
+                        delta=delta.content,
+                        is_complete=False
+                    )
+                
+                # Обработка вызова инструмента
+                if hasattr(delta, "tool_calls") and delta.tool_calls:
+                    tool_call = delta.tool_calls[0]
+                    logger.info("Processing tool call: %s", tool_call)
+                    
+                    # Собираем вызов инструмента
+                    if not current_tool:
+                        current_tool = {
+                            "name": tool_call.function.name if hasattr(tool_call.function, "name") else "",
+                            "arguments": tool_call.function.arguments if hasattr(tool_call.function, "arguments") else ""
+                        }
+                        logger.info("Started new tool call: %s", current_tool)
+                    else:
+                        # Обновляем только если пришло новое значение
+                        if hasattr(tool_call.function, "name") and tool_call.function.name:
+                            current_tool["name"] = tool_call.function.name
+                        if hasattr(tool_call.function, "arguments") and tool_call.function.arguments:
+                            current_tool["arguments"] += tool_call.function.arguments
+                        logger.info("Updated tool call: %s", current_tool)
+                    
+                    # Проверяем, что у нас есть имя и аргументы похожи на полный JSON
+                    if current_tool["name"] and current_tool["arguments"]:
+                        # Проверяем, что JSON полный (начинается с { и заканчивается })
+                        args_str = current_tool["arguments"].strip()
+                        if args_str.startswith("{") and args_str.endswith("}"):
+                            try:
+                                args = json.loads(args_str)
+                                tool_call = ToolCall(
+                                    tool=current_tool["name"],
+                                    params=args
+                                )
+                                logger.info("Executing tool: %s with args: %s", tool_call.tool, args)
+                                
+                                # Отправляем чанк с вызовом
+                                yield StreamChunk(
+                                    content=current_content,
+                                    delta="",
+                                    tool_call=tool_call,
+                                    is_complete=False
+                                )
+                                
+                                # Выполняем инструмент
+                                result = await self.tool_executor(
+                                    current_tool["name"],
+                                    **args
+                                )
+                                logger.info("Tool execution result: %s", result)
+                                
+                                # Отправляем результат
+                                yield StreamChunk(
+                                    content=current_content,
+                                    delta="",
+                                    tool_call=tool_call,
+                                    tool_result=str(result),
+                                    is_complete=False
+                                )
+                                
+                                current_tool = None
+                                
+                            except json.JSONDecodeError as e:
+                                logger.debug("JSON not complete yet: %s", e)  # Понижаем уровень до debug
+                                # Продолжаем собирать чанки
+                                pass
+                
+                # Проверяем завершение
+                if chunk.choices[0].finish_reason is not None:
+                    logger.info("Stream completed with reason: %s", chunk.choices[0].finish_reason)
+                    yield StreamChunk(
+                        content=current_content,
+                        delta="",
+                        is_complete=True
+                    )
+                    break
+                    
+        except Exception as e:
+            logger.error("Stream generation failed: %s", str(e))
+            logger.exception("Full traceback:")
+            yield StreamChunk(
+                content=f"Error: {str(e)}",
+                delta=f"Error: {str(e)}",
+                is_complete=True
+            )
 
-        while iteration < max_iterations:
-            iteration += 1
-            # Логируем текущую итерацию
-            message_previews = [
-                f"{m.get('role')}: {str(m.get('content', ''))[:30]}..."
-                for m in current_messages
-            ]
-            logger.info(f"Iteration {iteration}, messages: {message_previews}")
-
+    async def _generate_regular_response(
+        self,
+        request_params: Dict[str, Any]
+    ) -> LLMResponse:
+        """Генерирует обычный (не потоковый) ответ"""
+        current_messages = request_params["messages"].copy()
+        tool_messages = []
+        final_content = ""
+        
+        while True:
             try:
-                # Делаем запрос к LLM
                 response = await self.client.chat.completions.create(**request_params)
                 message = response.choices[0].message
-                logger.debug(f"LLM response: {message}")
-
-                # Проверяем наличие tool_calls
-                tool_calls = getattr(message, 'tool_calls', None)
-                has_tool_calls = tool_calls is not None and len(tool_calls) > 0
                 
-                # Добавляем сообщение от ассистента в историю
-                current_messages.append(message.model_dump())
-
-                if has_tool_calls:
-                    logger.info(f"Processing {len(message.tool_calls)} tool calls")
-                    
-                    # Обрабатываем каждый вызов инструмента
-                    for tool_call in message.tool_calls:
-                        # Пропускаем дубликаты
-                        if self._is_duplicate_tool_call(tool_call.function.model_dump(), current_messages):
-                            logger.warning("Skipping duplicate tool call")
+                # Добавляем сообщение от ассистента
+                message_dict = message.model_dump()
+                current_messages.append(message_dict)
+                tool_messages.append(message_dict)
+                
+                # Проверяем наличие tool_calls
+                tool_calls = message_dict.get('tool_calls') or []
+                if tool_calls:  # Если есть tool_calls
+                    # Обрабатываем инструменты
+                    for tool_call in tool_calls:
+                        # Получаем имя и аргументы инструмента
+                        tool_name = tool_call['function']['name']
+                        tool_args = tool_call['function']['arguments']
+                        
+                        if self._is_duplicate_tool_call({"name": tool_name, "arguments": tool_args}, current_messages):
                             continue
                             
-                        # Обрабатываем вызов и добавляем результат в историю
-                        tool_message = await self.process_tool_call(
-                            tool_call
-                        )
-                        current_messages.append(tool_message)
-                    
-                    # Обновляем сообщения для следующей итерации
+                        try:
+                            args = json.loads(tool_args)
+                            tool_call_obj = ToolCall(
+                                tool=tool_name,
+                                params=args
+                            )
+                            
+                            # Выполняем инструмент
+                            result = await self.tool_executor(
+                                tool_name,
+                                **args
+                            )
+                            
+                            # Добавляем результат
+                            tool_message = {
+                                "role": "tool",
+                                "content": json.dumps({"answer": str(result)}),
+                                "tool_call_id": tool_call.get('id', 'unknown')
+                            }
+                            
+                            current_messages.append(tool_message)
+                            tool_messages.append(tool_message)
+                            
+                        except json.JSONDecodeError as e:
+                            logger.error("Failed to parse tool arguments: %s", e)
+                            continue
+                            
                     request_params["messages"] = current_messages
                     continue
                 
-                # Если нет tool_calls, форматируем и возвращаем ответ
-                content = message.content or ""
-                if response_format == "json":
-                    try:
-                        content_json = json.loads(content)
-                        if "answer" not in content_json:
-                            content = json.dumps({"answer": content})
-                    except json.JSONDecodeError:
-                        content = json.dumps({"answer": content})
-
+                # Сохраняем только последний контент как финальный
+                final_content = message_dict.get('content', '')
+                
+                # Собираем вызовы инструментов
+                tool_calls_list = []
+                for msg in tool_messages:
+                    msg_tool_calls = msg.get('tool_calls') or []
+                    for call in msg_tool_calls:
+                        tool_calls_list.append(ToolCall(
+                            tool=call['function']['name'],
+                            params=json.loads(call['function']['arguments']),
+                            id=call.get('id', 'unknown'),
+                            index=call.get('index', 0)
+                        ))
+                
                 return LLMResponse(
-                    content=content,
-                    tool_messages=current_messages[len(messages):]
+                    content=final_content,  # Используем только финальный контент
+                    tool_calls=tool_calls_list,
+                    tool_messages=[]  # Не передаем tool_messages, так как они уже в content
                 )
-
+                
             except Exception as e:
-                logger.error(f"API request failed: {str(e)}")
+                logger.error("API request failed: %s", str(e))
+                logger.exception("Full traceback:")
                 raise RuntimeError(f"API request failed: {str(e)}")
-
-        logger.warning("Max iterations reached")
-        return LLMResponse(
-            content=json.dumps({"error": "Max iterations reached"}),
-            tool_messages=current_messages[len(messages):]
-        )
 
     async def close(self):
         """Закрывает соединение с API"""

@@ -1,14 +1,16 @@
-from .interfaces import BaseLLM, LLMResponse, ToolSchema, ToolParameter, ToolCall
-from .openai_service import OpenAIService, OpenAIProvider
+from .interfaces import BaseLLM, LLMResponse, ToolCall, StreamChunk
+from .openai_service import OpenAIService, OpenAIProvider, OPENAI, DEEPSEEK, OLLAMA
 from .llm import LLMRouter
 
 __all__ = [
     'BaseLLM',
     'LLMResponse',
-    'ToolSchema',
-    'ToolParameter',
     'ToolCall',
+    'StreamChunk',
     'OpenAIService',
     'OpenAIProvider',
+    'OPENAI',
+    'DEEPSEEK',
+    'OLLAMA',
     'LLMRouter'
 ] 

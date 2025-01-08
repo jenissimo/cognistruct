@@ -33,7 +33,7 @@ SYSTEM_PROMPT = """
 При планировании учитывай часовой пояс пользователя
 """.strip()
 
-init_logging(level=logging.INFO)
+#init_logging(level=logging.INFO)
 logger = setup_logger(__name__)
 
 

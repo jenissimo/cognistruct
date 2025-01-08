@@ -1,7 +1,7 @@
-from typing import Any, Dict, List, Optional, Union, Literal
+from typing import Any, Dict, List, Optional, Union, Literal, AsyncGenerator
 import json
 
-from llm import BaseLLM, LLMResponse, ToolCall
+from llm import BaseLLM, LLMResponse, ToolCall, StreamChunk
 from plugins import PluginManager
 from plugins.base_plugin import IOMessage
 from utils.logging import setup_logger
@@ -137,13 +137,25 @@ class BaseAgent:
                 sections.append(str(plugin_context))
         return "\n".join(sections)
 
-    async def process_message(self, message: str, system_prompt: str = None) -> str:
+    async def process_message(
+        self,
+        message: str,
+        system_prompt: Optional[str] = None,
+        stream: bool = False,
+        **kwargs
+    ) -> Union[str, AsyncGenerator[StreamChunk, None]]:
         """
         Обрабатывает входящее сообщение
         
         Args:
             message: Входящее сообщение
             system_prompt: Системный промпт (опционально)
+            stream: Использовать потоковую генерацию
+            **kwargs: Дополнительные параметры для LLM
+            
+        Returns:
+            - При stream=False: строка с ответом
+            - При stream=True: AsyncGenerator[StreamChunk, None] для потоковой генерации
         """
         # Создаем объект сообщения
         io_message = IOMessage(content=message)
@@ -187,21 +199,57 @@ class BaseAgent:
             "content": message
         })
         
-        # Получаем ответ от LLM
-        response = await self.llm.generate_response(
-            messages=messages,
-            tools=self.plugin_manager.get_all_tools()
-        )
-        
-        # Создаем объект ответного сообщения
-        response_message = IOMessage(
-            type="text",  # Используем type="text" для консистентности
-            content=response.content
-        )
-        
-        # Выполняем output_hooks
-        for plugin in self.plugin_manager.get_all_plugins():
-            if hasattr(plugin, 'output_hook'):
-                await plugin.output_hook(response_message)
-        
-        return response.content 
+        try:
+            # Получаем ответ от LLM
+            response = await self.llm.generate_response(
+                messages=messages,
+                tools=self.plugin_manager.get_all_tools(),
+                stream=stream,
+                **kwargs
+            )
+            
+            if stream:
+                # При стриминге возвращаем генератор
+                async def stream_with_hooks():
+                    current_content = ""
+                    async for chunk in response:
+                        # Обновляем текущий контент
+                        if chunk.delta:
+                            current_content += chunk.delta
+                        yield chunk
+
+                # Создаем генератор
+                stream_generator = stream_with_hooks()
+                
+                # Создаем объект сообщения для стрима
+                stream_message = IOMessage(
+                    type="stream",
+                    content="",  # Начальный контент пустой
+                    stream=stream_generator  # Передаем генератор
+                )
+                
+                # Выполняем output_hooks
+                for plugin in self.plugin_manager.get_all_plugins():
+                    if hasattr(plugin, 'output_hook'):
+                        await plugin.output_hook(stream_message)
+                
+                # Возвращаем тот же генератор - он еще не использован,
+                # так как консольный плагин только сохранил его для последующего использования
+                return stream_generator
+            else:
+                # Создаем объект ответного сообщения
+                response_message = IOMessage(
+                    type="text",
+                    content=response.content
+                )
+                
+                # Выполняем output_hooks
+                for plugin in self.plugin_manager.get_all_plugins():
+                    if hasattr(plugin, 'output_hook'):
+                        await plugin.output_hook(response_message)
+                
+                return response.content
+                
+        except Exception as e:
+            logger.exception("Error processing message")
+            raise 

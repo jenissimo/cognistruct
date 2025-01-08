@@ -1,6 +1,8 @@
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union, AsyncGenerator
 from dataclasses import dataclass, field
 import time
+
+from llm.interfaces import StreamChunk
 
 
 @dataclass
@@ -17,11 +19,12 @@ class PluginMetadata:
 @dataclass
 class IOMessage:
     """Сообщение для I/O хуков"""
-    type: str = "text"           # Тип сообщения (text, image, action, etc)
+    type: str = "text"           # Тип сообщения (text, image, action, stream, etc)
     content: Any = None          # Содержимое сообщения
     metadata: Dict[str, Any] = field(default_factory=dict)  # Дополнительные данные
     source: str = ""            # Источник сообщения
     timestamp: float = field(default_factory=time.time)  # Время создания
+    stream: Optional[AsyncGenerator[StreamChunk, None]] = None  # Стрим для потоковой генерации
 
 
 class BasePlugin:
