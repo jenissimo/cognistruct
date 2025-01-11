@@ -22,7 +22,7 @@ class Stage(ABC):
         return load_prompt(template_name, **kwargs)
     
     @abstractmethod
-    def run(self, db: Any, llm: Any, agent: BaseAgent) -> bool:
+    async def run(self, db: Any, llm: Any, agent: BaseAgent) -> bool:
         """
         Выполняет этап обработки
         
@@ -58,7 +58,7 @@ class StageChain:
         else:
             return StageChain(self.stages + [next_stage])
 
-    def run(self, db: Any, llm: Any, agent: BaseAgent) -> bool:
+    async def run(self, db: Any, llm: Any, agent: BaseAgent) -> bool:
         """
         Запускаем каждую стадию по порядку
         
@@ -73,7 +73,7 @@ class StageChain:
         for stage in self.stages:
             print(f"\n[bold blue]=== Запуск стадии: {stage.__class__.__name__} ===[/bold blue]")
             try:
-                success = stage.run(db, llm, agent)
+                success = await stage.run(db, llm, agent)
                 if not success:
                     print(f"[bold yellow]⚠ Остановка на стадии {stage.__class__.__name__}[/bold yellow]")
                     return False

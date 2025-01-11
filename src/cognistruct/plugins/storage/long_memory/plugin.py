@@ -1,8 +1,7 @@
-import sqlite3
+import aiosqlite
 import json
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-import asyncio
 from pathlib import Path
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -30,6 +29,7 @@ class LongTermMemoryPlugin(BasePlugin):
         self.max_context_memories = max_context_memories
         self.recency_weight = recency_weight
         self.vectorizer = TfidfVectorizer()
+        self._db: Optional[aiosqlite.Connection] = None
         
     def get_metadata(self) -> PluginMetadata:
         return PluginMetadata(
@@ -73,29 +73,32 @@ class LongTermMemoryPlugin(BasePlugin):
     async def setup(self):
         """Инициализация базы данных"""
         await super().setup()
-        await self._setup_db()
         
-    async def _setup_db(self):
-        """Создание таблиц в базе данных"""
-        def _setup():
-            db_dir = Path(self.db_path).parent
-            db_dir.mkdir(parents=True, exist_ok=True)
-            
-            with sqlite3.connect(self.db_path) as conn:
-                # Таблица фактов
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS memories (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER,
-                        content TEXT NOT NULL,
-                        tags TEXT NOT NULL,
-                        last_accessed DATETIME,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                conn.commit()
-                
-        await asyncio.to_thread(_setup)
+        # Создаем директорию если нужно
+        db_dir = Path(self.db_path).parent
+        db_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Подключаемся к базе данных
+        self._db = await aiosqlite.connect(self.db_path)
+        
+        # Создаем таблицу фактов
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                content TEXT NOT NULL,
+                tags TEXT NOT NULL,
+                last_accessed DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await self._db.commit()
+        
+    async def cleanup(self):
+        """Закрытие соединения с БД"""
+        if self._db:
+            await self._db.close()
+            await super().cleanup()
         
     async def add_memory(self, content: str, tags: List[str], user_id: Optional[int] = None):
         """
@@ -106,32 +109,24 @@ class LongTermMemoryPlugin(BasePlugin):
             tags: Список тегов
             user_id: ID пользователя (если не указан, берется из контекста)
         """
-        def _add():
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute(
-                    "INSERT INTO memories (user_id, content, tags, last_accessed) VALUES (?, ?, ?, ?)",
-                    (
-                        user_id if user_id is not None else self.user_id,
-                        content,
-                        json.dumps(tags),
-                        datetime.now().isoformat()
-                    )
-                )
-                conn.commit()
-                
-        await asyncio.to_thread(_add)
+        await self._db.execute(
+            "INSERT INTO memories (user_id, content, tags, last_accessed) VALUES (?, ?, ?, ?)",
+            (
+                user_id if user_id is not None else self.user_id,
+                content,
+                json.dumps(tags),
+                datetime.now().isoformat()
+            )
+        )
+        await self._db.commit()
         
     async def update_access_time(self, memory_id: int):
         """Обновляет время последнего доступа"""
-        def _update():
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute(
-                    "UPDATE memories SET last_accessed = ? WHERE id = ?",
-                    (datetime.now().isoformat(), memory_id)
-                )
-                conn.commit()
-                
-        await asyncio.to_thread(_update)
+        await self._db.execute(
+            "UPDATE memories SET last_accessed = ? WHERE id = ?",
+            (datetime.now().isoformat(), memory_id)
+        )
+        await self._db.commit()
         
     async def search_memories(self, query: str, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """
@@ -141,49 +136,47 @@ class LongTermMemoryPlugin(BasePlugin):
             query: Поисковый запрос
             user_id: ID пользователя (если не указан, берется из контекста)
         """
-        def _search():
-            with sqlite3.connect(self.db_path) as conn:
-                # Получаем воспоминания только для указанного пользователя
-                cursor = conn.execute(
-                    "SELECT id, content, tags, last_accessed FROM memories WHERE user_id = ?",
-                    (user_id if user_id is not None else self.user_id,)
-                )
-                memories = [
-                    {
-                        "id": row[0],
-                        "content": row[1],
-                        "tags": json.loads(row[2]),
-                        "last_accessed": datetime.fromisoformat(row[3])
-                    }
-                    for row in cursor.fetchall()
-                ]
-                
-            if not memories:
-                return []
-                
-            # Векторизуем запрос и содержимое
-            texts = [query] + [m["content"] for m in memories]
-            tfidf_matrix = self.vectorizer.fit_transform(texts)
+        # Получаем воспоминания только для указанного пользователя
+        async with self._db.execute(
+            "SELECT id, content, tags, last_accessed FROM memories WHERE user_id = ?",
+            (user_id if user_id is not None else self.user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
             
-            # Считаем косинусное сходство
-            similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:])[0]
+        memories = [
+            {
+                "id": row[0],
+                "content": row[1],
+                "tags": json.loads(row[2]),
+                "last_accessed": datetime.fromisoformat(row[3])
+            }
+            for row in rows
+        ]
             
-            # Добавляем вес недавних обращений
-            now = datetime.now()
-            recency_scores = np.array([
-                1.0 - (now - m["last_accessed"]).total_seconds() / (24 * 3600)  # Нормализуем на 24 часа
-                for m in memories
-            ])
-            recency_scores = np.clip(recency_scores, 0, 1)
+        if not memories:
+            return []
             
-            # Комбинируем оценки
-            final_scores = (1 - self.recency_weight) * similarities + self.recency_weight * recency_scores
-            
-            # Сортируем и возвращаем топ-N
-            indices = np.argsort(final_scores)[::-1][:self.max_context_memories]
-            return [memories[i] for i in indices]
-            
-        return await asyncio.to_thread(_search)
+        # Векторизуем запрос и содержимое
+        texts = [query] + [m["content"] for m in memories]
+        tfidf_matrix = self.vectorizer.fit_transform(texts)
+        
+        # Считаем косинусное сходство
+        similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:])[0]
+        
+        # Добавляем вес недавних обращений
+        now = datetime.now()
+        recency_scores = np.array([
+            1.0 - (now - m["last_accessed"]).total_seconds() / (24 * 3600)  # Нормализуем на 24 часа
+            for m in memories
+        ])
+        recency_scores = np.clip(recency_scores, 0, 1)
+        
+        # Комбинируем оценки
+        final_scores = (1 - self.recency_weight) * similarities + self.recency_weight * recency_scores
+        
+        # Сортируем и возвращаем топ-N
+        indices = np.argsort(final_scores)[::-1][:self.max_context_memories]
+        return [memories[i] for i in indices]
         
     async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> str:
         """Выполняет инструмент"""

@@ -1,10 +1,9 @@
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
-import sqlite3
+import aiosqlite
 import json
 import time
 from pathlib import Path
-import asyncio
 
 from cognistruct.core import BasePlugin, PluginMetadata
 
@@ -37,7 +36,7 @@ class ProjectStoragePlugin(BasePlugin):
     
     def __init__(self, db_path: str = "project_storage.db"):
         super().__init__()
-        self._db: Optional[sqlite3.Connection] = None
+        self._db: Optional[aiosqlite.Connection] = None
         self.db_path = db_path
         
     def get_metadata(self) -> PluginMetadata:
@@ -50,27 +49,24 @@ class ProjectStoragePlugin(BasePlugin):
         
     async def setup(self):
         """Инициализация БД"""
-        def _setup():
-            self._db = sqlite3.connect(self.db_path)
-            self._db.execute("""
-                CREATE TABLE IF NOT EXISTS projects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    description TEXT,
-                    created_at REAL,
-                    updated_at REAL,
-                    metadata TEXT
-                )
-            """)
-            self._db.commit()
-            
-        await asyncio.to_thread(_setup)
+        self._db = await aiosqlite.connect(self.db_path)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_at REAL,
+                updated_at REAL,
+                metadata TEXT
+            )
+        """)
+        await self._db.commit()
         
     async def cleanup(self):
         """Закрытие соединения с БД"""
         if self._db:
-            self._db.close()
+            await self._db.close()
             
     async def create_project(self, data: Dict[str, Any]) -> Project:
         """Создание нового проекта"""
@@ -81,11 +77,11 @@ class ProjectStoragePlugin(BasePlugin):
         
         # Сохраняем проект
         timestamp = time.time()
-        cursor = self._db.execute(
+        cursor = await self._db.execute(
             "INSERT INTO projects (user_id, name, description, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
             (user_id, name, description, timestamp, timestamp, json.dumps(metadata))
         )
-        self._db.commit()
+        await self._db.commit()
         
         return Project(
             id=cursor.lastrowid,
@@ -99,11 +95,11 @@ class ProjectStoragePlugin(BasePlugin):
         
     async def get_project(self, project_id: int) -> Optional[Project]:
         """Получение проекта по ID"""
-        cursor = self._db.execute(
+        async with self._db.execute(
             "SELECT * FROM projects WHERE id = ?",
             (project_id,)
-        )
-        row = cursor.fetchone()
+        ) as cursor:
+            row = await cursor.fetchone()
         
         if not row:
             return None
@@ -130,15 +126,16 @@ class ProjectStoragePlugin(BasePlugin):
         metadata = {**project.metadata, **(data.get("metadata", {}))}
         
         timestamp = time.time()
-        self._db.execute("""
+        await self._db.execute("""
             UPDATE projects 
             SET name = ?, description = ?, updated_at = ?, metadata = ?
             WHERE id = ?
         """, (name, description, timestamp, json.dumps(metadata), project_id))
-        self._db.commit()
+        await self._db.commit()
         
         return Project(
             id=project_id,
+            user_id=project.user_id,  # Добавил user_id, который раньше пропускался
             name=name,
             description=description,
             created_at=project.created_at,
@@ -148,11 +145,11 @@ class ProjectStoragePlugin(BasePlugin):
         
     async def delete_project(self, project_id: int) -> bool:
         """Удаление проекта"""
-        cursor = self._db.execute(
+        cursor = await self._db.execute(
             "DELETE FROM projects WHERE id = ?",
             (project_id,)
         )
-        self._db.commit()
+        await self._db.commit()
         return cursor.rowcount > 0
         
     async def search_projects(self, query: Dict[str, Any]) -> List[Project]:
@@ -191,10 +188,11 @@ class ProjectStoragePlugin(BasePlugin):
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
             
-        cursor = self._db.execute(sql, params)
+        async with self._db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            
         projects = []
-        
-        for row in cursor.fetchall():
+        for row in rows:
             projects.append(Project(
                 id=row[0],
                 user_id=row[1],

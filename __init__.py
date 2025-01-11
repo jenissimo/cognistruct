@@ -1,1 +1,0 @@
-"""Cognistruct - Framework for creating modular intelligent agents""" 

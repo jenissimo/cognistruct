@@ -1,5 +1,5 @@
 import os
-import sqlite3
+import aiosqlite
 import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
@@ -32,8 +32,7 @@ class UserStoragePlugin(BasePlugin):
         """
         super().__init__()
         self.db_path = db_path
-        self._conn = None
-        self._setup_db()
+        self._conn: Optional[aiosqlite.Connection] = None
 
     def get_metadata(self) -> PluginMetadata:
         """Получить метаданные плагина"""
@@ -44,32 +43,32 @@ class UserStoragePlugin(BasePlugin):
             author="CogniStruct"
         )
 
-    def _setup_db(self):
+    async def setup(self):
         """Инициализация базы данных"""
         # Создаем директорию если нужно
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         
         # Подключаемся к базе
-        self._conn = sqlite3.connect(self.db_path)
+        self._conn = await aiosqlite.connect(self.db_path)
         
         # Создаем таблицу пользователей
-        with self._conn:
-            self._conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    display_name TEXT,
-                    email TEXT,
-                    metadata TEXT,
-                    created_at REAL,
-                    updated_at REAL
-                )
-            """)
+        await self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                display_name TEXT,
+                email TEXT,
+                metadata TEXT,
+                created_at REAL,
+                updated_at REAL
+            )
+        """)
+        await self._conn.commit()
 
     async def cleanup(self):
         """Очистка ресурсов"""
         if self._conn:
-            self._conn.close()
+            await self._conn.close()
 
     async def create_user(self, username: str, **kwargs) -> User:
         """
@@ -87,34 +86,34 @@ class UserStoragePlugin(BasePlugin):
         
         now = time.time()
         
-        with self._conn:
-            cursor = self._conn.execute(
-                """
-                INSERT INTO users (
-                    username, display_name, email, metadata, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    username,
-                    kwargs.get('display_name'),
-                    kwargs.get('email'),
-                    json.dumps(kwargs.get('metadata', {})),
-                    now,
-                    now
-                )
+        cursor = await self._conn.execute(
+            """
+            INSERT INTO users (
+                username, display_name, email, metadata, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                username,
+                kwargs.get('display_name'),
+                kwargs.get('email'),
+                json.dumps(kwargs.get('metadata', {})),
+                now,
+                now
             )
-            
-            user_id = cursor.lastrowid
-            
-            return User(
-                id=user_id,
-                username=username,
-                display_name=kwargs.get('display_name'),
-                email=kwargs.get('email'),
-                metadata=kwargs.get('metadata', {}),
-                created_at=now,
-                updated_at=now
-            )
+        )
+        await self._conn.commit()
+        
+        user_id = cursor.lastrowid
+        
+        return User(
+            id=user_id,
+            username=username,
+            display_name=kwargs.get('display_name'),
+            email=kwargs.get('email'),
+            metadata=kwargs.get('metadata', {}),
+            created_at=now,
+            updated_at=now
+        )
 
     async def get_user(self, user_id: int) -> Optional[User]:
         """
@@ -128,25 +127,24 @@ class UserStoragePlugin(BasePlugin):
         """
         import json
         
-        with self._conn:
-            cursor = self._conn.execute(
-                "SELECT * FROM users WHERE id = ?",
-                (user_id,)
-            )
-            row = cursor.fetchone()
+        async with self._conn.execute(
+            "SELECT * FROM users WHERE id = ?",
+            (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
             
-            if not row:
-                return None
-                
-            return User(
-                id=row[0],
-                username=row[1],
-                display_name=row[2],
-                email=row[3],
-                metadata=json.loads(row[4]) if row[4] else {},
-                created_at=row[5],
-                updated_at=row[6]
-            )
+        if not row:
+            return None
+            
+        return User(
+            id=row[0],
+            username=row[1],
+            display_name=row[2],
+            email=row[3],
+            metadata=json.loads(row[4]) if row[4] else {},
+            created_at=row[5],
+            updated_at=row[6]
+        )
 
     async def get_user_by_username(self, username: str) -> Optional[User]:
         """
@@ -160,25 +158,24 @@ class UserStoragePlugin(BasePlugin):
         """
         import json
         
-        with self._conn:
-            cursor = self._conn.execute(
-                "SELECT * FROM users WHERE username = ?",
-                (username,)
-            )
-            row = cursor.fetchone()
+        async with self._conn.execute(
+            "SELECT * FROM users WHERE username = ?",
+            (username,)
+        ) as cursor:
+            row = await cursor.fetchone()
             
-            if not row:
-                return None
-                
-            return User(
-                id=row[0],
-                username=row[1],
-                display_name=row[2],
-                email=row[3],
-                metadata=json.loads(row[4]) if row[4] else {},
-                created_at=row[5],
-                updated_at=row[6]
-            )
+        if not row:
+            return None
+            
+        return User(
+            id=row[0],
+            username=row[1],
+            display_name=row[2],
+            email=row[3],
+            metadata=json.loads(row[4]) if row[4] else {},
+            created_at=row[5],
+            updated_at=row[6]
+        )
 
     async def update_user(self, user_id: int, **kwargs) -> Optional[User]:
         """
@@ -218,11 +215,11 @@ class UserStoragePlugin(BasePlugin):
         fields = ', '.join(f"{k} = ?" for k in updates.keys())
         values = tuple(updates.values())
         
-        with self._conn:
-            self._conn.execute(
-                f"UPDATE users SET {fields} WHERE id = ?",
-                values + (user_id,)
-            )
+        await self._conn.execute(
+            f"UPDATE users SET {fields} WHERE id = ?",
+            values + (user_id,)
+        )
+        await self._conn.commit()
             
         # Получаем обновленного пользователя
         return await self.get_user(user_id)
@@ -237,12 +234,12 @@ class UserStoragePlugin(BasePlugin):
         Returns:
             bool: True если пользователь был удален
         """
-        with self._conn:
-            cursor = self._conn.execute(
-                "DELETE FROM users WHERE id = ?",
-                (user_id,)
-            )
-            return cursor.rowcount > 0
+        cursor = await self._conn.execute(
+            "DELETE FROM users WHERE id = ?",
+            (user_id,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
 
     async def search_users(self, query: str) -> List[User]:
         """
@@ -256,25 +253,24 @@ class UserStoragePlugin(BasePlugin):
         """
         import json
         
-        with self._conn:
-            cursor = self._conn.execute(
-                """
-                SELECT * FROM users 
-                WHERE username LIKE ? OR display_name LIKE ?
-                """,
-                (f"%{query}%", f"%{query}%")
-            )
+        async with self._conn.execute(
+            """
+            SELECT * FROM users 
+            WHERE username LIKE ? OR display_name LIKE ?
+            """,
+            (f"%{query}%", f"%{query}%")
+        ) as cursor:
+            rows = await cursor.fetchall()
             
-            users = []
-            for row in cursor:
-                users.append(User(
-                    id=row[0],
-                    username=row[1],
-                    display_name=row[2],
-                    email=row[3],
-                    metadata=json.loads(row[4]) if row[4] else {},
-                    created_at=row[5],
-                    updated_at=row[6]
-                ))
-                
-            return users 
+        return [
+            User(
+                id=row[0],
+                username=row[1],
+                display_name=row[2],
+                email=row[3],
+                metadata=json.loads(row[4]) if row[4] else {},
+                created_at=row[5],
+                updated_at=row[6]
+            )
+            for row in rows
+        ] 

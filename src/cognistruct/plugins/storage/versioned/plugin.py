@@ -1,10 +1,9 @@
 from typing import Dict, Any, Optional, List, Tuple, Union
 from dataclasses import dataclass
-import sqlite3
+import aiosqlite
 import json
 import time
 from pathlib import Path
-import asyncio
 import re
 import uuid
 import os
@@ -45,7 +44,7 @@ class VersionedStoragePlugin(BasePlugin):
                  version_weight: float = 0.3,  # Вес версии при ранжировании
                  time_weight: float = 0.2):    # Вес времени создания
         super().__init__()
-        self._db: Optional[sqlite3.Connection] = None
+        self._db: Optional[aiosqlite.Connection] = None
         self.db_path = db_path
         self.version_weight = version_weight
         self.time_weight = time_weight
@@ -61,34 +60,35 @@ class VersionedStoragePlugin(BasePlugin):
         
     async def setup(self):
         """Инициализация БД"""
-        def _setup():
-            self._db = sqlite3.connect(self.db_path)
-            # Добавляем колонку user_id, если её нет
-            try:
-                self._db.execute("ALTER TABLE artifacts ADD COLUMN user_id TEXT")
-                self._db.commit()
-            except sqlite3.OperationalError:
-                pass  # Колонка уже существует
-                
-            self._db.execute("""
-                CREATE TABLE IF NOT EXISTS artifacts (
-                    key TEXT,
-                    value TEXT,
-                    version INTEGER,
-                    created_at REAL,
-                    metadata TEXT,
-                    user_id TEXT,
-                    PRIMARY KEY (key, version)
-                )
-            """)
-            self._db.commit()
+        # Создаем директорию если нужно
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        
+        self._db = await aiosqlite.connect(self.db_path)
+        
+        # Добавляем колонку user_id, если её нет
+        try:
+            await self._db.execute("ALTER TABLE artifacts ADD COLUMN user_id TEXT")
+            await self._db.commit()
+        except aiosqlite.OperationalError:
+            pass  # Колонка уже существует
             
-        await asyncio.to_thread(_setup)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS artifacts (
+                key TEXT,
+                value TEXT,
+                version INTEGER,
+                created_at REAL,
+                metadata TEXT,
+                user_id TEXT,
+                PRIMARY KEY (key, version)
+            )
+        """)
+        await self._db.commit()
         
     async def cleanup(self):
         """Закрытие соединения с БД"""
         if self._db:
-            self._db.close()
+            await self._db.close()
             
     async def create(self, data: Dict[str, Any]) -> VersionedArtifact:
         """Создание нового артефакта"""
@@ -99,20 +99,20 @@ class VersionedStoragePlugin(BasePlugin):
         user_id = data.get("user_id", self.user_id)
         
         # Проверяем существование артефакта
-        cursor = self._db.execute(
+        async with self._db.execute(
             "SELECT MAX(version) FROM artifacts WHERE key = ?",
             (key,)
-        )
-        result = cursor.fetchone()
-        version = 1 if result[0] is None else result[0] + 1
+        ) as cursor:
+            result = await cursor.fetchone()
+            version = 1 if result[0] is None else result[0] + 1
         
         # Сохраняем новую версию
         created_at = time.time()
-        self._db.execute(
+        cursor = await self._db.execute(
             "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?, ?)",
             (key, json.dumps(value), version, created_at, json.dumps(metadata), user_id)
         )
-        self._db.commit()
+        await self._db.commit()
         
         return VersionedArtifact(key, value, version, created_at, metadata, user_id)
         
@@ -125,21 +125,22 @@ class VersionedStoragePlugin(BasePlugin):
             version: Конкретная версия (если None, возвращает последнюю)
         """
         if version is not None:
-            cursor = self._db.execute("""
+            async with self._db.execute("""
                 SELECT value, version, created_at, metadata, user_id 
                 FROM artifacts 
                 WHERE key = ? AND version = ?
-            """, (id, version))
+            """, (id, version)) as cursor:
+                row = await cursor.fetchone()
         else:
-            cursor = self._db.execute("""
+            async with self._db.execute("""
                 SELECT value, version, created_at, metadata, user_id 
                 FROM artifacts 
                 WHERE key = ? 
                 ORDER BY version DESC 
                 LIMIT 1
-            """, (id,))
+            """, (id,)) as cursor:
+                row = await cursor.fetchone()
             
-        row = cursor.fetchone()
         if not row:
             return None
             
@@ -168,16 +169,16 @@ class VersionedStoragePlugin(BasePlugin):
             version: Конкретная версия (если None, удаляет все версии)
         """
         if version is not None:
-            cursor = self._db.execute(
+            cursor = await self._db.execute(
                 "DELETE FROM artifacts WHERE key = ? AND version = ?", 
                 (id, version)
             )
         else:
-            cursor = self._db.execute(
+            cursor = await self._db.execute(
                 "DELETE FROM artifacts WHERE key = ?", 
                 (id,)
             )
-        self._db.commit()
+        await self._db.commit()
         return cursor.rowcount > 0
         
     async def search(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -192,114 +193,69 @@ class VersionedStoragePlugin(BasePlugin):
         - tags: список тегов для фильтрации
         - user_id: фильтр по пользователю (если не указан, используется текущий)
         """
-        def _search():
-            sql = "SELECT key, value, version, created_at, metadata, user_id FROM artifacts"
-            params = []
-            where_clauses = []
+        sql = "SELECT key, value, version, created_at, metadata, user_id FROM artifacts"
+        params = []
+        where_clauses = []
+        
+        # Базовая фильтрация
+        if "key_prefix" in query:
+            where_clauses.append("key LIKE ?")
+            params.append(f"{query['key_prefix']}%")
             
-            # Базовая фильтрация
-            if "key_prefix" in query:
-                where_clauses.append("key LIKE ?")
-                params.append(f"{query['key_prefix']}%")
-                
-            if "version" in query:
-                where_clauses.append("version = ?")
-                params.append(query["version"])
-                
-            if "tags" in query:
-                tags = query["tags"]
-                if isinstance(tags, str):
-                    tags = [tags]
-                # Поиск по тегам в метаданных через JSON
-                tags_conditions = []
-                for tag in tags:
-                    tags_conditions.append(f"json_extract(metadata, '$.tags') LIKE '%{tag}%'")
-                if tags_conditions:
-                    where_clauses.append(f"({' OR '.join(tags_conditions)})")
-                
-            # Используем user_id из контекста, если не указан явно
-            user_id = query.get("user_id", self.user_id)
-            if user_id is not None:
-                where_clauses.append("user_id = ?")
-                params.append(user_id)
-                
-            if where_clauses:
-                sql += " WHERE " + " AND ".join(where_clauses)
-                
-            if query.get("latest_only"):
-                sql = f"""
-                    WITH latest_versions AS (
-                        SELECT key, MAX(version) as max_version
-                        FROM ({sql}) sub
-                        GROUP BY key
-                    )
-                    SELECT a.* 
-                    FROM artifacts a
-                    JOIN latest_versions lv 
-                        ON a.key = lv.key 
-                        AND a.version = lv.max_version
-                """
-                
-            cursor = self._db.execute(sql, params)
-            artifacts = []
+        if "version" in query:
+            where_clauses.append("version = ?")
+            params.append(query["version"])
             
-            for row in cursor.fetchall():
-                key, value, version, created_at, metadata, user_id = row
-                artifacts.append({
-                    "key": key,
-                    "value": json.loads(value),
-                    "version": version,
-                    "created_at": created_at,
-                    "metadata": json.loads(metadata),
-                    "user_id": user_id
-                })
-                
-            if not artifacts:
-                return []
-                
-            # Если есть текстовый запрос, используем TF-IDF
-            if "text_query" in query and query["text_query"]:
-                # Подготавливаем тексты для векторизации
-                search_query = query["text_query"]
-                texts = [search_query]
-                
-                # Извлекаем текстовое содержимое из артефактов
-                for artifact in artifacts:
-                    if isinstance(artifact["value"], dict) and "text" in artifact["value"]:
-                        texts.append(artifact["value"]["text"])
-                    else:
-                        texts.append(json.dumps(artifact["value"]))
-                
-                # Векторизуем и считаем сходство
-                tfidf_matrix = self.vectorizer.fit_transform(texts)
-                similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:])[0]
-                
-                # Нормализуем версии и время создания
-                max_version = max(a["version"] for a in artifacts)
-                version_scores = np.array([a["version"] / max_version for a in artifacts])
-                
-                latest_time = max(a["created_at"] for a in artifacts)
-                time_scores = np.array([a["created_at"] / latest_time for a in artifacts])
-                
-                # Комбинируем оценки
-                content_weight = 1 - self.version_weight - self.time_weight
-                final_scores = (
-                    content_weight * similarities + 
-                    self.version_weight * version_scores +
-                    self.time_weight * time_scores
+        if "tags" in query:
+            tags = query["tags"]
+            if isinstance(tags, str):
+                tags = [tags]
+            # Поиск по тегам в метаданных через JSON
+            tags_conditions = []
+            for tag in tags:
+                tags_conditions.append(f"json_extract(metadata, '$.tags') LIKE '%{tag}%'")
+            if tags_conditions:
+                where_clauses.append(f"({' OR '.join(tags_conditions)})")
+            
+        # Используем user_id из контекста, если не указан явно
+        user_id = query.get("user_id", self.user_id)
+        if user_id is not None:
+            where_clauses.append("user_id = ?")
+            params.append(user_id)
+            
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+            
+        if query.get("latest_only"):
+            sql = f"""
+                WITH latest_versions AS (
+                    SELECT key, MAX(version) as max_version
+                    FROM ({sql}) sub
+                    GROUP BY key
                 )
-                
-                # Сортируем по финальной оценке
-                scored_artifacts = list(zip(artifacts, final_scores))
-                scored_artifacts.sort(key=lambda x: x[1], reverse=True)
-                
-                return [artifact for artifact, _ in scored_artifacts]
+                SELECT a.* 
+                FROM artifacts a
+                JOIN latest_versions lv 
+                    ON a.key = lv.key 
+                    AND a.version = lv.max_version
+            """
             
-            # Если нет текстового запроса, сортируем по версии и времени
-            artifacts.sort(key=lambda x: (x["version"], x["created_at"]), reverse=True)
-            return artifacts
+        async with self._db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
             
-        return await asyncio.to_thread(_search)
+        artifacts = []
+        for row in rows:
+            key, value, version, created_at, metadata, user_id = row
+            artifacts.append({
+                "key": key,
+                "value": json.loads(value),
+                "version": version,
+                "created_at": created_at,
+                "metadata": json.loads(metadata),
+                "user_id": user_id
+            })
+            
+        return artifacts
         
     def get_tools(self) -> List[Dict[str, Any]]:
         """Возвращает инструмент для работы с артефактами"""
