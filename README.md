@@ -302,7 +302,7 @@ scheduler = SchedulerPlugin(
 ## Создание агента
 
 ```python
-from agents import BaseAgent
+from core import BaseAgent
 from llm import LLMRouter
 from plugins.console_plugin import ConsolePlugin
 from plugins.example_plugin import CalculatorPlugin

@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import time
 
 from llm.interfaces import StreamChunk
+from core.context import GlobalContext
 
 
 @dataclass
@@ -45,6 +46,7 @@ class BasePlugin:
         self._metadata = self.get_metadata()
         self._supported_input_types: List[str] = []
         self._supported_output_types: List[str] = []
+        self.context = GlobalContext
     
     @property
     def name(self) -> str:
@@ -55,6 +57,11 @@ class BasePlugin:
     def priority(self) -> int:
         """Приоритет плагина"""
         return self._metadata.priority
+
+    @property
+    def user_id(self) -> int:
+        """ID текущего пользователя из глобального контекста"""
+        return self.context.get().user_id
 
     @property
     def supported_input_types(self) -> List[str]:

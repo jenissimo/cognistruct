@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, filters
 import time
 
-from plugins.base_plugin import BasePlugin, IOMessage, PluginMetadata
+from core import BasePlugin, IOMessage, PluginMetadata
 from .bot import TelegramBot
 from .database import TelegramDatabase
 from .handlers import TelegramHandlers
@@ -21,13 +21,13 @@ logger = logging.getLogger(__name__)
 class TelegramPlugin(BasePlugin):
     """Telegram плагин для CogniStruct"""
     
-    def __init__(self, user_id: str = None):
+    def __init__(self, telegram_user_id: str = None):
         super().__init__()
         self.bot = None
         self.db = None
         self.handlers = None
         self._current_chat_id = None  # Текущий чат для обработки
-        self.user_id = user_id  # ID пользователя для привязки
+        self.telegram_user_id = telegram_user_id  # ID пользователя для привязки
         
     def get_metadata(self) -> PluginMetadata:
         return PluginMetadata(
@@ -84,8 +84,8 @@ class TelegramPlugin(BasePlugin):
         result = {"status": "initialized"}
         
         # Если задан user_id, проверяем/создаем привязку чата
-        if self.user_id:
-            chat_id = await self.check_chat_link(self.user_id)
+        if self.telegram_user_id:
+            chat_id = await self.check_chat_link(self.telegram_user_id)
             if chat_id:
                 logger.info(f"Found existing chat link: {chat_id}")
                 self._current_chat_id = chat_id
@@ -94,8 +94,8 @@ class TelegramPlugin(BasePlugin):
                     "chat_id": chat_id
                 })
             else:
-                key = await self.generate_key(self.user_id)
-                logger.info(f"Generated new key for user {self.user_id}: {key}")
+                key = await self.generate_key(self.telegram_user_id)
+                logger.info(f"Generated new key for user {self.telegram_user_id}: {key}")
                 result.update({
                     "chat_status": "not_linked",
                     "key": key

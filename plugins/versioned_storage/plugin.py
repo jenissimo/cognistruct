@@ -1,17 +1,19 @@
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple, Union
 from dataclasses import dataclass
 import sqlite3
 import json
 import time
-import uuid
-import re
 from pathlib import Path
-import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 import asyncio
+import re
+import uuid
+import os
+import logging
 
-from plugins.base_plugin import BasePlugin, PluginMetadata
+from sklearn.feature_extraction.text import TfidfVectorizer
+from core import BasePlugin, PluginMetadata
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -327,14 +329,33 @@ class VersionedStoragePlugin(BasePlugin):
             # Просто используем префикс и UUID
             return f"{prefix}/{uuid.uuid4().hex[:12]}"
             
-    def generate_hierarchical_id(self, *parts: str) -> str:
+    def generate_hierarchical_id(self, *parts: Union[str, Tuple[str, str]]) -> str:
         """
-        Генерирует иерархический ID из частей
+        Генерирует иерархический ID из частей, поддерживая шаблоны вида Type{value}
         
-        Example:
-            generate_hierarchical_id("story", "chapter1", "scene2")
-            -> "story/chapter1/scene2"
+        Args:
+            *parts: Части ID. Каждая часть может быть:
+                   - строкой (используется как есть)
+                   - кортежем (тип, значение) для генерации Type{value}
+        
+        Examples:
+            >>> generate_hierarchical_id("books", ("book", "1"), ("chapter", "12"), ("scene", "3"))
+            "books/Book1/Chapter12/Scene3"
+            
+            >>> generate_hierarchical_id(("book", "hp1"), "chapters", ("scene", "battle"))
+            "Book_hp1/chapters/Scene_battle"
         """
-        # Очищаем и соединяем части, убирая лишние слэши
-        clean_parts = [re.sub(r'[^a-z0-9_-]+', '_', p.lower()) for p in parts]
-        return str(Path(*clean_parts)) 
+        formatted_parts = []
+        for part in parts:
+            if isinstance(part, tuple) and len(part) == 2:
+                type_name, value = part
+                # Очищаем значение и делаем первую букву типа заглавной
+                clean_value = re.sub(r'[^a-z0-9_-]+', '_', str(value).lower())
+                formatted_type = type_name.capitalize()
+                formatted_parts.append(f"{formatted_type}{clean_value}")
+            else:
+                # Для обычных строк просто очищаем
+                clean_part = re.sub(r'[^a-z0-9_-]+', '_', str(part).lower())
+                formatted_parts.append(clean_part)
+                
+        return "/".join(formatted_parts) 

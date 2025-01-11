@@ -11,11 +11,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils import Config, init_logging, setup_logger, get_timezone
 from llm import LLMRouter
-from agents.base_agent import BaseAgent
-from plugins.base_plugin import IOMessage
+from core import BaseAgent
 from plugins.telegram_plugin.plugin import TelegramPlugin
 from plugins.scheduler_plugin.plugin import SchedulerPlugin
-from plugins.example_plugin.plugin import CalculatorPlugin
+from plugins.example_plugin import CalculatorPlugin
 from plugins.internet_plugin.plugin import InternetPlugin
 
 # Загружаем конфигурацию
@@ -59,7 +58,7 @@ async def main():
         agent = BaseAgent(llm=llm, auto_load_plugins=False)
         
         # Создаем минимальный набор плагинов
-        telegram = TelegramPlugin(user_id="test_user")
+        telegram = TelegramPlugin(telegram_user_id="test_user")
         scheduler = SchedulerPlugin(
             tick_interval=1.0,
             timezone=str(get_timezone())

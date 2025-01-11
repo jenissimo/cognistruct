@@ -2,9 +2,9 @@ from datetime import datetime, timedelta, time
 import zoneinfo
 from typing import Dict, List, Optional, Any, Callable
 
-from plugins.base_plugin import BasePlugin, IOMessage, PluginMetadata
+from core.base_plugin import BasePlugin, IOMessage, PluginMetadata
 from llm.interfaces import ToolSchema, ToolParameter
-from utils.scheduler import Scheduler, Task
+from core.scheduler import Scheduler, Task
 from utils.logging import setup_logger
 
 logger = setup_logger(__name__)

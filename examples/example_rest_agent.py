@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils import Config, init_logging, setup_logger
 from llm import LLMRouter
-from agents.base_agent import BaseAgent
+from core import BaseAgent
 from plugins.rest_api.plugin import RESTApiPlugin
 from plugins.versioned_storage.plugin import VersionedStoragePlugin
 
@@ -40,9 +40,7 @@ async def setup_agent(llm) -> BaseAgent:
     storage = VersionedStoragePlugin()
     rest_api = RESTApiPlugin(
         port=8000,
-        enable_auth=True,
-        admin_username=config.admin_username,
-        admin_password=config.admin_password,
+        enable_auth=False,
         allowed_origins=["http://localhost:3000"]  # Для фронтенда
     )
     
@@ -57,12 +55,7 @@ async def setup_agent(llm) -> BaseAgent:
     logger.info(f"\n🚀 REST API запущен на http://localhost:8000")
     logger.info(f"📚 Swagger документация: http://localhost:8000/docs")
     logger.info(f"📖 ReDoc документация: http://localhost:8000/redoc")
-    
-    if config.admin_username and config.admin_password:
-        logger.info(f"🔐 Авторизация включена")
-        logger.info(f"👤 Пользователь: {config.admin_username}")
-    else:
-        logger.warning("⚠️ Авторизация отключена! Рекомендуется настроить через setup_config.py")
+    logger.warning("⚠️ Авторизация отключена! Рекомендуется настроить через setup_config.py")
     
     return agent
 

@@ -1,14 +1,14 @@
-from typing import Dict, Any, List, Optional
 import asyncio
 import logging
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 from pathlib import Path
 
 from duckduckgo_search import DDGS
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-
-from plugins.base_plugin import BasePlugin, PluginMetadata, IOMessage
 from llm.interfaces import ToolSchema, ToolParameter
+
+from core import BasePlugin, PluginMetadata, IOMessage
 
 logger = logging.getLogger(__name__)
 

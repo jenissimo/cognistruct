@@ -1,6 +1,7 @@
-from typing import List, Dict, Any
+from typing import Dict, Any, List
+import math
 
-from plugins.base_plugin import BasePlugin, PluginMetadata
+from core import BasePlugin, PluginMetadata
 from llm.interfaces import ToolSchema, ToolParameter
 
 

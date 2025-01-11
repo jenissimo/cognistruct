@@ -2,29 +2,32 @@ import os
 import sys
 import asyncio
 import logging
-from typing import Optional
 from functools import partial
 
 # Добавляем родительскую директорию в PYTHONPATH
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import Config, init_logging, setup_logger, get_timezone
+from utils import Config
 from llm import LLMRouter
-from agents.base_agent import BaseAgent
-from plugins.example_plugin.plugin import CalculatorPlugin
-from plugins.console_plugin.plugin import ConsolePlugin, IOMessage
+from core import BaseAgent
+from plugins.example_plugin import CalculatorPlugin
+from plugins.console_plugin import ConsolePlugin
+
+# Раскомментируйте для включения логирования
+#from utils.logging import init_logging
+#init_logging(level=logging.DEBUG)
 
 # Конфигурация LLM (выберите один вариант)
 LLM_CONFIG = {
     # Для Ollama (локальный):
-    "provider": "ollama",
-    "model": "qwen2.5",
-    "api_key": "ollama",
+    #"provider": "ollama",
+    #"model": "qwen2.5",
+    #"api_key": "ollama",
     
     # Для DeepSeek:
-     #"provider": "deepseek",
-     #"model": "deepseek-chat",
-     #"api_key": Config.load().deepseek_api_key,
+     "provider": "deepseek",
+     "model": "deepseek-chat",
+     "api_key": Config.load().deepseek_api_key,
      "temperature": 0.5  # Добавляем температуру (0.0 - более точные ответы, 1.0 - более креативные)
 }
 
@@ -41,8 +44,6 @@ SYSTEM_PROMPT = """
 - Общих рассуждений
 - Базовых математических операций, которые можно выполнить в уме
 """.strip()
-
-#init_logging(level=logging.DEBUG)
 
 async def main():
     """Точка входа"""

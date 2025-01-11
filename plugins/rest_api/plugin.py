@@ -1,79 +1,47 @@
 import os
-import jwt
-import asyncio
+import json
 import logging
+import asyncio
+import secrets
+from typing import Dict, Any, Optional, List, Callable, Awaitable
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
-from functools import wraps
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Depends, Security, Body
+import jwt
+from fastapi import FastAPI, HTTPException, Depends, status, Request, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from pydantic import BaseModel, Field
 import uvicorn
 
-from plugins.base_plugin import BasePlugin, IOMessage
+from core import BasePlugin, IOMessage, PluginMetadata
+from .models import (
+    Message, Response, Token, User, TokenData, 
+    ChatRequest, CRUDSRequest, APIResponse
+)
+from .auth import create_access_token, get_password_hash, verify_password
 
 logger = logging.getLogger(__name__)
 
-# Модели данных
-class TokenData(BaseModel):
-    """Данные JWT токена"""
-    username: str
-    scopes: List[str] = Field(
-        default_factory=list,
-        description="Список разрешений пользователя"
-    )
-
-class ChatRequest(BaseModel):
-    """Запрос к чату с агентом"""
-    message: str = Field(
-        ...,
-        description="Сообщение для агента",
-        example="Привет! Как дела?"
-    )
-    system_prompt: Optional[str] = Field(
-        None,
-        description="Системный промпт для настройки поведения агента",
-        example="Ты - дружелюбный ассистент. Отвечай кратко и по делу."
-    )
-
-class CRUDSRequest(BaseModel):
-    """Запрос к CRUDS методам"""
-    data: Dict[str, Any] = Field(
-        ...,
-        description="Данные для создания или обновления",
-        example={"title": "Заметка", "content": "Текст заметки"}
-    )
-    query: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Параметры поиска",
-        example={"tags": ["important"]}
-    )
-    id: Optional[str] = Field(
-        None,
-        description="Идентификатор ресурса",
-        example="note_123"
-    )
-
-class APIResponse(BaseModel):
-    """Ответ API"""
-    status: str = Field(
-        default="success",
-        description="Статус ответа: success или error"
-    )
-    data: Optional[Any] = Field(
-        None,
-        description="Данные ответа"
-    )
-    error: Optional[str] = Field(
-        None,
-        description="Сообщение об ошибке"
-    )
-
 class RESTApiPlugin(BasePlugin):
     """REST API плагин с автоматической генерацией CRUDS эндпоинтов"""
+
+    def get_metadata(self) -> PluginMetadata:
+        """Возвращает метаданные плагина"""
+        return PluginMetadata(
+            name="REST API",
+            description="REST API для доступа к плагинам и чату с агентом",
+            version="1.0.0",
+            author="CogniStruct"
+        )
+
+    def get_tools(self) -> List[Dict[str, Any]]:
+        """REST API не предоставляет инструментов"""
+        return []
+
+    async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Any:
+        """REST API не поддерживает выполнение инструментов"""
+        raise NotImplementedError("REST API не поддерживает выполнение инструментов")
 
     def __init__(
         self,

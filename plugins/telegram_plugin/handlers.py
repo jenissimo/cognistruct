@@ -1,9 +1,11 @@
 import logging
-from typing import Optional, Callable, Awaitable
+from typing import Optional, Dict, Any, Callable, Awaitable
 from telegram import Update
 from telegram.ext import ContextTypes
+
+from core import IOMessage
+from .bot import TelegramBot
 from .database import TelegramDatabase
-from plugins.base_plugin import IOMessage
 
 logger = logging.getLogger(__name__)
 
