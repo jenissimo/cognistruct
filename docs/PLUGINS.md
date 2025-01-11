@@ -311,7 +311,65 @@ class WebhookPlugin(BasePlugin):
 - Не блокировать event loop
 - Правильно закрывать ресурсы
 
-### 4. Документация
+### 4. Работа с контекстом и пользователями
+
+Каждый плагин имеет доступ к глобальному контексту через `self.context`. Особенно важно правильно работать с `user_id`:
+
+```python
+class MyPlugin(BasePlugin):
+    @property
+    def user_id(self) -> int:
+        """ID текущего пользователя из глобального контекста"""
+        return self.context.get().user_id
+
+    async def my_method(self, data: Dict[str, Any], user_id: Optional[int] = None):
+        # Если user_id передан явно - используем его
+        # Если нет - берем из контекста
+        actual_user_id = user_id if user_id is not None else self.user_id
+        
+        # Важно! Используем is not None вместо or,
+        # чтобы корректно обработать случай user_id = 0
+        
+        # Дальше работаем с actual_user_id...
+```
+
+#### Лучшие практики работы с user_id:
+
+1. **Явное лучше неявного**
+   - Всегда добавляйте `user_id` в схему данных
+   - Документируйте поведение методов с `user_id`
+
+2. **Безопасность**
+   - Проверяйте права доступа к данным
+   - Изолируйте данные разных пользователей
+   - Не полагайтесь на отсутствие `user_id` как признак системного действия
+
+3. **SQL и user_id**
+   ```sql
+   -- Правильно: явная фильтрация по user_id
+   SELECT * FROM items WHERE user_id = ?
+   
+   -- Правильно: группировка по user_id
+   SELECT id, ROW_NUMBER() OVER (
+       PARTITION BY user_id 
+       ORDER BY created_at DESC
+   ) as rn FROM items
+   ```
+
+4. **Обработка значения по умолчанию**
+   ```python
+   # Правильно
+   user_id = data.get("user_id")
+   if user_id is not None:
+       # Используем переданный user_id
+   else:
+       # Используем self.user_id из контекста
+   
+   # Неправильно - потеряем user_id = 0
+   user_id = data.get("user_id") or self.user_id
+   ```
+
+### 5. Документация
 - Документировать все публичные методы
 - Предоставлять примеры использования
 - Описывать требования и зависимости

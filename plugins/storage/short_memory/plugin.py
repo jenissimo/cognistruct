@@ -44,6 +44,7 @@ class ShortTermMemoryPlugin(BasePlugin):
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS memory (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER,
                         role TEXT NOT NULL,
                         content TEXT NOT NULL,
                         metadata TEXT,
@@ -58,13 +59,18 @@ class ShortTermMemoryPlugin(BasePlugin):
         """Очистка устаревших записей"""
         def _cleanup():
             with sqlite3.connect(self.db_path) as conn:
-                # Оставляем только последние max_messages сообщений
+                # Оставляем только последние max_messages сообщений для каждого пользователя
                 conn.execute("""
                     DELETE FROM memory 
                     WHERE id NOT IN (
-                        SELECT id FROM memory 
-                        ORDER BY timestamp DESC 
-                        LIMIT ?
+                        SELECT id FROM (
+                            SELECT id, ROW_NUMBER() OVER (
+                                PARTITION BY user_id 
+                                ORDER BY timestamp DESC
+                            ) as rn 
+                            FROM memory
+                        ) ranked 
+                        WHERE rn <= ?
                     )
                 """, (self.max_messages,))
                 conn.commit()
@@ -77,22 +83,30 @@ class ShortTermMemoryPlugin(BasePlugin):
         def _add():
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
-                    "INSERT INTO memory (role, content, metadata) VALUES (?, ?, ?)",
+                    "INSERT INTO memory (user_id, role, content, metadata) VALUES (?, ?, ?, ?)",
                     (
+                        self.user_id,
                         role,
                         content,
                         json.dumps(metadata or {})
                     )
                 )
-                # Удаляем старые сообщения если превышен лимит
+                # Удаляем старые сообщения если превышен лимит для данного пользователя
                 conn.execute("""
                     DELETE FROM memory 
                     WHERE id NOT IN (
-                        SELECT id FROM memory 
-                        ORDER BY timestamp DESC 
-                        LIMIT ?
+                        SELECT id FROM (
+                            SELECT id, ROW_NUMBER() OVER (
+                                PARTITION BY user_id 
+                                ORDER BY timestamp DESC
+                            ) as rn 
+                            FROM memory
+                            WHERE user_id = ?
+                        ) ranked 
+                        WHERE rn <= ?
                     )
-                """, (self.max_messages,))
+                    AND user_id = ?
+                """, (self.user_id, self.max_messages, self.user_id))
                 conn.commit()
         
         await asyncio.to_thread(_add)
@@ -105,10 +119,11 @@ class ShortTermMemoryPlugin(BasePlugin):
                     """
                     SELECT role, content, metadata, timestamp 
                     FROM memory 
+                    WHERE user_id = ?
                     ORDER BY timestamp DESC
                     LIMIT ?
                     """,
-                    (limit or self.max_messages,)
+                    (self.user_id, limit or self.max_messages)
                 )
                 return [
                     {

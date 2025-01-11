@@ -55,6 +55,7 @@ class ProjectStoragePlugin(BasePlugin):
             self._db.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
                     name TEXT NOT NULL,
                     description TEXT,
                     created_at REAL,
@@ -76,17 +77,19 @@ class ProjectStoragePlugin(BasePlugin):
         name = data["name"]
         description = data.get("description", "")
         metadata = data.get("metadata", {})
+        user_id = data.get("user_id", self.user_id)  # Используем user_id из контекста если не передан
         
         # Сохраняем проект
         timestamp = time.time()
         cursor = self._db.execute(
-            "INSERT INTO projects (name, description, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?)",
-            (name, description, timestamp, timestamp, json.dumps(metadata))
+            "INSERT INTO projects (user_id, name, description, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, name, description, timestamp, timestamp, json.dumps(metadata))
         )
         self._db.commit()
         
         return Project(
             id=cursor.lastrowid,
+            user_id=user_id,
             name=name,
             description=description,
             created_at=timestamp,
@@ -107,11 +110,12 @@ class ProjectStoragePlugin(BasePlugin):
             
         return Project(
             id=row[0],
-            name=row[1],
-            description=row[2],
-            created_at=row[3],
-            updated_at=row[4],
-            metadata=json.loads(row[5])
+            user_id=row[1],
+            name=row[2],
+            description=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+            metadata=json.loads(row[6])
         )
         
     async def update_project(self, project_id: int, data: Dict[str, Any]) -> Optional[Project]:
@@ -158,7 +162,7 @@ class ProjectStoragePlugin(BasePlugin):
         Поддерживаемые параметры:
         - name_query: поиск по названию
         - tags: список тегов
-        - owner_id: ID владельца
+        - user_id: ID владельца (если не указан, используется текущий)
         """
         sql = "SELECT * FROM projects"
         params = []
@@ -168,9 +172,11 @@ class ProjectStoragePlugin(BasePlugin):
             where_clauses.append("name LIKE ?")
             params.append(f"%{query['name_query']}%")
             
-        if "owner_id" in query:
-            where_clauses.append("json_extract(metadata, '$.owner_id') = ?")
-            params.append(query["owner_id"])
+        # Используем user_id из контекста если не передан явно
+        user_id = query.get("user_id", self.user_id)
+        if user_id is not None:
+            where_clauses.append("user_id = ?")
+            params.append(user_id)
             
         if "tags" in query:
             tags = query["tags"]
@@ -191,11 +197,12 @@ class ProjectStoragePlugin(BasePlugin):
         for row in cursor.fetchall():
             projects.append(Project(
                 id=row[0],
-                name=row[1],
-                description=row[2],
-                created_at=row[3],
-                updated_at=row[4],
-                metadata=json.loads(row[5])
+                user_id=row[1],
+                name=row[2],
+                description=row[3],
+                created_at=row[4],
+                updated_at=row[5],
+                metadata=json.loads(row[6])
             ))
             
         return projects

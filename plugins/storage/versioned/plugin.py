@@ -24,6 +24,7 @@ class VersionedArtifact:
     version: int
     created_at: float
     metadata: Dict[str, Any]
+    user_id: Optional[str] = None
 
 
 class VersionedStoragePlugin(BasePlugin):
@@ -36,6 +37,7 @@ class VersionedStoragePlugin(BasePlugin):
     - version: версия (автоматически увеличивается при обновлении)
     - created_at: время создания версии
     - metadata: дополнительные метаданные (включая теги)
+    - user_id: идентификатор пользователя (опционально)
     """
     
     def __init__(self, 
@@ -53,7 +55,7 @@ class VersionedStoragePlugin(BasePlugin):
         return PluginMetadata(
             name="versioned_storage",
             description="Хранилище версионированных артефактов",
-            version="0.2.0",
+            version="0.3.0",
             author="Cognistruct"
         )
         
@@ -61,6 +63,13 @@ class VersionedStoragePlugin(BasePlugin):
         """Инициализация БД"""
         def _setup():
             self._db = sqlite3.connect(self.db_path)
+            # Добавляем колонку user_id, если её нет
+            try:
+                self._db.execute("ALTER TABLE artifacts ADD COLUMN user_id TEXT")
+                self._db.commit()
+            except sqlite3.OperationalError:
+                pass  # Колонка уже существует
+                
             self._db.execute("""
                 CREATE TABLE IF NOT EXISTS artifacts (
                     key TEXT,
@@ -68,6 +77,7 @@ class VersionedStoragePlugin(BasePlugin):
                     version INTEGER,
                     created_at REAL,
                     metadata TEXT,
+                    user_id TEXT,
                     PRIMARY KEY (key, version)
                 )
             """)
@@ -85,6 +95,8 @@ class VersionedStoragePlugin(BasePlugin):
         key = data["key"]
         value = data["value"]
         metadata = data.get("metadata", {})
+        # Используем user_id из контекста, если не передан явно
+        user_id = data.get("user_id", self.user_id)
         
         # Проверяем существование артефакта
         cursor = self._db.execute(
@@ -97,24 +109,37 @@ class VersionedStoragePlugin(BasePlugin):
         # Сохраняем новую версию
         created_at = time.time()
         self._db.execute(
-            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?)",
-            (key, json.dumps(value), version, created_at, json.dumps(metadata))
+            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?, ?)",
+            (key, json.dumps(value), version, created_at, json.dumps(metadata), user_id)
         )
         self._db.commit()
         
-        return VersionedArtifact(key, value, version, created_at, metadata)
+        return VersionedArtifact(key, value, version, created_at, metadata, user_id)
         
-    async def read(self, id: str) -> Optional[Dict[str, Any]]:
-        """Получение последней версии артефакта по ключу"""
-        cursor = self._db.execute("""
-            SELECT value, version, created_at, metadata 
-            FROM artifacts 
-            WHERE key = ? 
-            ORDER BY version DESC 
-            LIMIT 1
-        """, (id,))
+    async def read(self, id: str, version: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """
+        Получение артефакта по ключу
+        
+        Args:
+            id: Ключ артефакта
+            version: Конкретная версия (если None, возвращает последнюю)
+        """
+        if version is not None:
+            cursor = self._db.execute("""
+                SELECT value, version, created_at, metadata, user_id 
+                FROM artifacts 
+                WHERE key = ? AND version = ?
+            """, (id, version))
+        else:
+            cursor = self._db.execute("""
+                SELECT value, version, created_at, metadata, user_id 
+                FROM artifacts 
+                WHERE key = ? 
+                ORDER BY version DESC 
+                LIMIT 1
+            """, (id,))
+            
         row = cursor.fetchone()
-        
         if not row:
             return None
             
@@ -123,7 +148,8 @@ class VersionedStoragePlugin(BasePlugin):
             "value": json.loads(row[0]),
             "version": row[1],
             "created_at": row[2],
-            "metadata": json.loads(row[3])
+            "metadata": json.loads(row[3]),
+            "user_id": row[4]
         }
         
     async def update(self, id: str, data: Dict[str, Any]) -> bool:
@@ -133,9 +159,24 @@ class VersionedStoragePlugin(BasePlugin):
         """
         return bool(await self.create({"key": id, **data}))
         
-    async def delete(self, id: str) -> bool:
-        """Удаление всех версий артефакта"""
-        cursor = self._db.execute("DELETE FROM artifacts WHERE key = ?", (id,))
+    async def delete(self, id: str, version: Optional[int] = None) -> bool:
+        """
+        Удаление артефакта
+        
+        Args:
+            id: Ключ артефакта
+            version: Конкретная версия (если None, удаляет все версии)
+        """
+        if version is not None:
+            cursor = self._db.execute(
+                "DELETE FROM artifacts WHERE key = ? AND version = ?", 
+                (id, version)
+            )
+        else:
+            cursor = self._db.execute(
+                "DELETE FROM artifacts WHERE key = ?", 
+                (id,)
+            )
         self._db.commit()
         return cursor.rowcount > 0
         
@@ -149,9 +190,10 @@ class VersionedStoragePlugin(BasePlugin):
         - latest_only: только последние версии
         - text_query: текстовый поиск по содержимому
         - tags: список тегов для фильтрации
+        - user_id: фильтр по пользователю (если не указан, используется текущий)
         """
         def _search():
-            sql = "SELECT key, value, version, created_at, metadata FROM artifacts"
+            sql = "SELECT key, value, version, created_at, metadata, user_id FROM artifacts"
             params = []
             where_clauses = []
             
@@ -175,6 +217,12 @@ class VersionedStoragePlugin(BasePlugin):
                 if tags_conditions:
                     where_clauses.append(f"({' OR '.join(tags_conditions)})")
                 
+            # Используем user_id из контекста, если не указан явно
+            user_id = query.get("user_id", self.user_id)
+            if user_id is not None:
+                where_clauses.append("user_id = ?")
+                params.append(user_id)
+                
             if where_clauses:
                 sql += " WHERE " + " AND ".join(where_clauses)
                 
@@ -196,13 +244,14 @@ class VersionedStoragePlugin(BasePlugin):
             artifacts = []
             
             for row in cursor.fetchall():
-                key, value, version, created_at, metadata = row
+                key, value, version, created_at, metadata, user_id = row
                 artifacts.append({
                     "key": key,
                     "value": json.loads(value),
                     "version": version,
                     "created_at": created_at,
-                    "metadata": json.loads(metadata)
+                    "metadata": json.loads(metadata),
+                    "user_id": user_id
                 })
                 
             if not artifacts:
@@ -275,9 +324,17 @@ class VersionedStoragePlugin(BasePlugin):
                     "type": "object",
                     "description": "Метаданные и теги (для create/update)"
                 },
+                "user_id": {
+                    "type": "string",
+                    "description": "Идентификатор пользователя"
+                },
+                "version": {
+                    "type": "integer",
+                    "description": "Конкретная версия артефакта (для read/delete)"
+                },
                 "search_params": {
                     "type": "object",
-                    "description": "Параметры поиска (key_prefix, version, latest_only, text_query, tags)"
+                    "description": "Параметры поиска (key_prefix, version, latest_only, text_query, tags, user_id)"
                 }
             }
         }]
@@ -293,17 +350,25 @@ class VersionedStoragePlugin(BasePlugin):
             return await self.create({
                 "key": params["key"],
                 "value": params["value"],
-                "metadata": params.get("metadata", {})
+                "metadata": params.get("metadata", {}),
+                "user_id": params.get("user_id")
             })
         elif action == "read":
-            return await self.read(params["key"])
+            return await self.read(
+                params["key"], 
+                version=params.get("version")
+            )
         elif action == "update":
             return await self.update(params["key"], {
                 "value": params["value"],
-                "metadata": params.get("metadata", {})
+                "metadata": params.get("metadata", {}),
+                "user_id": params.get("user_id")
             })
         elif action == "delete":
-            return await self.delete(params["key"])
+            return await self.delete(
+                params["key"],
+                version=params.get("version")
+            )
         elif action == "search":
             return await self.search(params["search_params"])
         else:

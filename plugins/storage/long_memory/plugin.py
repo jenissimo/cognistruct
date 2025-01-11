@@ -86,6 +86,7 @@ class LongTermMemoryPlugin(BasePlugin):
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS memories (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER,
                         content TEXT NOT NULL,
                         tags TEXT NOT NULL,
                         last_accessed DATETIME,
@@ -96,13 +97,21 @@ class LongTermMemoryPlugin(BasePlugin):
                 
         await asyncio.to_thread(_setup)
         
-    async def add_memory(self, content: str, tags: List[str]):
-        """Добавляет новый факт в память"""
+    async def add_memory(self, content: str, tags: List[str], user_id: Optional[int] = None):
+        """
+        Добавляет новый факт в память
+        
+        Args:
+            content: Содержание факта
+            tags: Список тегов
+            user_id: ID пользователя (если не указан, берется из контекста)
+        """
         def _add():
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
-                    "INSERT INTO memories (content, tags, last_accessed) VALUES (?, ?, ?)",
+                    "INSERT INTO memories (user_id, content, tags, last_accessed) VALUES (?, ?, ?, ?)",
                     (
+                        user_id if user_id is not None else self.user_id,
                         content,
                         json.dumps(tags),
                         datetime.now().isoformat()
@@ -124,13 +133,20 @@ class LongTermMemoryPlugin(BasePlugin):
                 
         await asyncio.to_thread(_update)
         
-    async def search_memories(self, query: str) -> List[Dict[str, Any]]:
-        """Ищет релевантные воспоминания"""
+    async def search_memories(self, query: str, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Ищет релевантные воспоминания
+        
+        Args:
+            query: Поисковый запрос
+            user_id: ID пользователя (если не указан, берется из контекста)
+        """
         def _search():
             with sqlite3.connect(self.db_path) as conn:
-                # Получаем все воспоминания
+                # Получаем воспоминания только для указанного пользователя
                 cursor = conn.execute(
-                    "SELECT id, content, tags, last_accessed FROM memories"
+                    "SELECT id, content, tags, last_accessed FROM memories WHERE user_id = ?",
+                    (user_id if user_id is not None else self.user_id,)
                 )
                 memories = [
                     {
@@ -172,11 +188,18 @@ class LongTermMemoryPlugin(BasePlugin):
     async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> str:
         """Выполняет инструмент"""
         if tool_name == "remember":
-            await self.add_memory(params["fact"], params["tags"])
+            await self.add_memory(
+                params["fact"], 
+                params["tags"],
+                params.get("user_id")  # Добавляем поддержку user_id
+            )
             return f"Запомнил: {params['fact']}"
             
         elif tool_name == "recall":
-            memories = await self.search_memories(params["query"])
+            memories = await self.search_memories(
+                params["query"],
+                params.get("user_id")  # Добавляем поддержку user_id
+            )
             if not memories:
                 return "Не могу ничего вспомнить по этому запросу"
                 
