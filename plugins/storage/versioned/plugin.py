@@ -39,7 +39,7 @@ class VersionedStoragePlugin(BasePlugin):
     """
     
     def __init__(self, 
-                 db_path: str = "versioned_storage.db",
+                 db_path: str = "data/versioned_storage.db",
                  version_weight: float = 0.3,  # Вес версии при ранжировании
                  time_weight: float = 0.2):    # Вес времени создания
         super().__init__()
