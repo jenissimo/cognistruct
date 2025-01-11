@@ -56,6 +56,7 @@ class OpenAIService(BaseLLM):
         self.provider = provider
         self.tool_executor = None
         self._tool_call_counter = 0  # Счетчик для генерации уникальных ID
+        self.max_iterations = 5  # Максимальное количество итераций
         
         # Для Ollama не требуется API ключ
         if provider.name == "ollama":
@@ -174,7 +175,8 @@ class OpenAIService(BaseLLM):
 
         if tools:
             request_params["tools"] = convert_tool_schema(tools)
-            request_params["tool_choice"] = "auto"
+            # Используем "none" по умолчанию, чтобы модель не использовала инструменты без необходимости
+            request_params["tool_choice"] = kwargs.get("tool_choice", "auto")
 
         if stream:
             return self._generate_stream_response(request_params)
@@ -189,13 +191,19 @@ class OpenAIService(BaseLLM):
             try:
                 logger.info("Starting stream generation with params: %s", request_params)
                 
-                # Инициализируем список сообщений
+                # Инициализируем список сообщений и счетчик итераций
                 messages = request_params.get("messages", []).copy()
+                iteration = 0
+                used_tool_calls = set()  # Множество для отслеживания использованных вызовов
                 
-                while True:
+                while iteration < self.max_iterations:
+                    iteration += 1
+                    logger.info(f"Starting iteration {iteration}/{self.max_iterations}")
+                    
                     # Обновляем параметры запроса с текущими сообщениями
                     current_request_params = request_params.copy()
                     current_request_params["messages"] = messages
+                    current_request_params["temperature"] = self.provider.temperature
 
                     # Создаем потоковый запрос к LLM
                     stream = await self.client.chat.completions.create(**current_request_params)
@@ -203,7 +211,7 @@ class OpenAIService(BaseLLM):
                     current_content = ""
                     current_tool = None
                     tool_executed = False
-                    default_tool_id = self._generate_tool_call_id()  # Запасной ID если не придет из стрима
+                    default_tool_id = self._generate_tool_call_id()
 
                     async for chunk in stream:
                         logger.info("Received chunk: %s", chunk)
@@ -246,10 +254,17 @@ class OpenAIService(BaseLLM):
                             
                             # Проверяем, что у нас есть имя и аргументы похожи на полный JSON
                             if current_tool["name"] and current_tool["arguments"]:
+                                tool_key = f"{current_tool['name']}:{current_tool['arguments']}"
+                                if tool_key in used_tool_calls:
+                                    logger.warning(f"Skipping duplicate tool call: {tool_key}")
+                                    current_tool = None
+                                    continue
+                                
                                 args_str = current_tool["arguments"].strip()
                                 if args_str.startswith("{") and args_str.endswith("}"):
                                     try:
                                         args = json.loads(args_str)
+                                        used_tool_calls.add(tool_key)  # Добавляем в использованные
                                         tool_call_obj = ToolCall(
                                             tool=current_tool["name"],
                                             params=args,
@@ -321,7 +336,6 @@ class OpenAIService(BaseLLM):
                                 
                     if not tool_executed:
                         # Если инструмент не был выполнен, значит генерация завершена
-                        # Получаем финальный контент
                         final_chunk = StreamChunk(
                             content=current_content,
                             delta="",
@@ -330,11 +344,17 @@ class OpenAIService(BaseLLM):
                         logger.info("Stream completed")
                         yield final_chunk
                         break
-                    else:
-                        logger.info("Tool was executed, continuing with updated messages")
-                        # Продолжаем цикл с обновленными сообщениями
-                        continue
-                            
+                    elif iteration >= self.max_iterations:
+                        # Если достигли максимума итераций
+                        error_msg = f"Reached maximum number of iterations ({self.max_iterations})"
+                        logger.warning(error_msg)
+                        yield StreamChunk(
+                            content=error_msg,
+                            delta=error_msg,
+                            is_complete=True
+                        )
+                        break
+                    
             except Exception as e:
                 logger.error("Stream generation failed: %s", str(e))
                 logger.exception("Full traceback:")
@@ -349,13 +369,23 @@ class OpenAIService(BaseLLM):
         request_params: Dict[str, Any]
     ) -> LLMResponse:
         """Генерирует обычный (не потоковый) ответ"""
-        current_messages = request_params["messages"].copy()
+        current_messages = request_params.get("messages", []).copy()
         tool_messages = []
         final_content = ""
+        iteration = 0
+        used_tool_calls = set()  # Множество для отслеживания использованных вызовов
         
-        while True:
+        while iteration < self.max_iterations:
+            iteration += 1
+            logger.info(f"Starting iteration {iteration}/{self.max_iterations}")
+            
             try:
-                response = await self.client.chat.completions.create(**request_params)
+                # Добавляем температуру в параметры запроса
+                current_request_params = request_params.copy()
+                current_request_params["messages"] = current_messages
+                current_request_params["temperature"] = self.provider.temperature
+                
+                response = await self.client.chat.completions.create(**current_request_params)
                 message = response.choices[0].message
                 
                 # Добавляем сообщение от ассистента
@@ -372,11 +402,16 @@ class OpenAIService(BaseLLM):
                         tool_name = tool_call['function']['name']
                         tool_args = tool_call['function']['arguments']
                         
-                        if self._is_duplicate_tool_call({"name": tool_name, "arguments": tool_args}, current_messages):
+                        # Проверяем на повторный вызов
+                        tool_key = f"{tool_name}:{tool_args}"
+                        if tool_key in used_tool_calls:
+                            logger.warning(f"Skipping duplicate tool call: {tool_key}")
                             continue
                             
                         try:
                             args = json.loads(tool_args)
+                            used_tool_calls.add(tool_key)  # Добавляем в использованные
+                            
                             tool_call_obj = ToolCall(
                                 tool=tool_name,
                                 params=args
@@ -402,34 +437,27 @@ class OpenAIService(BaseLLM):
                             logger.error("Failed to parse tool arguments: %s", e)
                             continue
                             
-                    request_params["messages"] = current_messages
-                    continue
+                    continue  # Продолжаем цикл с обновленными сообщениями
                 
-                # Сохраняем только последний контент как финальный
+                # Если нет tool_calls, значит это финальный ответ
                 final_content = message_dict.get('content', '')
-                
-                # Собираем вызовы инструментов
-                tool_calls_list = []
-                for msg in tool_messages:
-                    msg_tool_calls = msg.get('tool_calls') or []
-                    for call in msg_tool_calls:
-                        tool_calls_list.append(ToolCall(
-                            tool=call['function']['name'],
-                            params=json.loads(call['function']['arguments']),
-                            id=call.get('id', 'unknown'),
-                            index=call.get('index', 0)
-                        ))
-                
-                return LLMResponse(
-                    content=final_content,  # Используем только финальный контент
-                    tool_calls=tool_calls_list,
-                    tool_messages=[]  # Не передаем tool_messages, так как они уже в content
-                )
+                break
                 
             except Exception as e:
                 logger.error("API request failed: %s", str(e))
                 logger.exception("Full traceback:")
                 raise RuntimeError(f"API request failed: {str(e)}")
+                
+        if iteration >= self.max_iterations:
+            error_msg = f"Reached maximum number of iterations ({self.max_iterations})"
+            logger.warning(error_msg)
+            final_content = error_msg
+            
+        return LLMResponse(
+            content=final_content,
+            tool_calls=[],  # Не передаем tool_calls, так как они уже обработаны
+            tool_messages=tool_messages
+        )
 
     async def close(self):
         """Закрывает соединение с API"""

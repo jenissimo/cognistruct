@@ -16,34 +16,80 @@
 
 ## Установка
 
+1. Клонируем репозиторий:
 ```bash
 git clone https://github.com/your-username/cognistruct.git
 cd cognistruct
+```
+
+2. Создаем и активируем виртуальное окружение:
+```bash
+# Создаем виртуальное окружение
+python -m venv venv
+
+# Активируем его:
+# - для Linux/macOS:
+source venv/bin/activate
+# - для Windows:
+# venv\Scripts\activate
+```
+
+3. Устанавливаем зависимости:
+```bash
 pip install -r requirements.txt
 ```
 
 ## Быстрый старт
 
-1. Создайте файл конфигурации:
-```bash
-cp config.example.yaml config.yaml
-```
-
-2. Настройте конфигурацию:
+1. Настройте API ключи и токены через интерактивный помощник:
 ```bash
 python setup_config.py
 ```
+Помощник попросит ввести (все поля опциональны):
+- DeepSeek API ключ (для использования DeepSeek LLM)
+- Telegram токен (для запуска Telegram бота)
+- Креденшлы для REST API (для защиты API endpoints)
 
-3. Запустите один из примеров:
+Конфигурация сохраняется в файл `~/.cognistruct/config` и может быть перезаписана через переменные окружения:
 ```bash
-# Консольный агент
+# Приоритет конфигурации:
+# 1. Переменные окружения (если заданы)
+# 2. Файл ~/.cognistruct/config (если существует)
+export DEEPSEEK_API_KEY=your_api_key
+export TELEGRAM_BOT_TOKEN=your_bot_token
+```
+
+2. Запустите один из примеров:
+```bash
+# Консольный агент с Ollama (локальный):
 python examples/example_simple_agent.py
 
+# Консольный агент с DeepSeek:
+python examples/example_simple_agent.py  # Используется ключ из конфига
+
 # Telegram бот
-python examples/example_telegram_agent.py
+python examples/example_telegram_agent.py  # Используется токен из конфига
 
 # REST API сервер
 python examples/example_rest_agent.py
+```
+
+Вы также можете настроить конфигурацию LLM прямо в файлах примеров или через переменные окружения. Например, в `example_simple_agent.py`:
+
+```python
+# Конфигурация LLM (выберите один вариант)
+LLM_CONFIG = {
+    # Для Ollama (локальный):
+    "provider": "ollama",
+    "model": "qwen2.5",
+    "api_key": "ollama",
+    
+    # Для DeepSeek:
+    #"provider": "deepseek",
+    #"model": "deepseek-chat",
+    #"api_key": Config.load().deepseek_api_key,  # Загружаем из конфига
+    "temperature": 0.5
+}
 ```
 
 ## Плагины

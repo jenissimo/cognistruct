@@ -152,9 +152,12 @@ class TelegramPlugin(BasePlugin):
                         await self.send_typing(chat_id)
                         last_typing = current_time
                         
+                    if chunk.tool_call:
+                        current_content += "🔧 Использую инструмент: " + chunk.tool_call.tool + "\n"
+
                     if chunk.delta:
                         current_content += chunk.delta
-                        
+                
                 # Отправляем финальное сообщение
                 boxes = await format_message(current_content)
                 for item in boxes:

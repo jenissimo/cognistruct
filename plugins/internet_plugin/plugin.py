@@ -25,11 +25,13 @@ class InternetPlugin(BasePlugin):
     def __init__(self,
                  browser_profile_dir: str = ".crawl4ai/browser_profile",
                  max_search_results: int = 5,
-                 min_word_count: int = 20):
+                 min_word_count: int = 20,
+                 max_markdown_length: int = 4000):
         super().__init__()
         self.browser_profile_dir = Path(browser_profile_dir)
         self.max_search_results = max_search_results
         self.min_word_count = min_word_count
+        self.max_markdown_length = max_markdown_length
         self._ddgs: Optional[DDGS] = None
         self._crawler: Optional[AsyncWebCrawler] = None
         
@@ -99,10 +101,11 @@ class InternetPlugin(BasePlugin):
             # Конфигурация для конкретного запроса
             run_config = CrawlerRunConfig(
                 word_count_threshold=self.min_word_count,  # Фильтруем короткие блоки
-                exclude_external_links=False,  # Сохраняем внешние ссылки
+                exclude_external_links=True,  # Убираем внешние ссылки
                 remove_overlay_elements=True,  # Удаляем попапы
                 process_iframes=True,  # Обрабатываем iframe
-                cache_mode=CacheMode.BYPASS  # Всегда свежий контент
+                cache_mode=CacheMode.BYPASS,  # Всегда свежий контент
+                fit_markdown=True  # Включаем оптимизированную версию markdown
             )
             
             result = await self._crawler.arun(url, config=run_config)
@@ -111,14 +114,19 @@ class InternetPlugin(BasePlugin):
                 print(f"Ошибка краулинга: {result.error_message}")
                 return None
                 
+            # Сначала пробуем использовать fit_markdown
+            markdown_content = result.fit_markdown or result.markdown
+            
+            # Если всё ещё слишком длинный, обрезаем
+            if len(markdown_content) > self.max_markdown_length:
+                markdown_content = markdown_content[:self.max_markdown_length] + "\n\n... (контент обрезан из-за ограничения длины)"
+                
             return {
                 "url": url,
-                "content": result.markdown,
+                "content": markdown_content,
                 "links": {
-                    "internal": result.links.get("internal", []),
-                    "external": result.links.get("external", [])
+                    "internal": result.links.get("internal", [])
                 },
-                "media": result.media,
                 "crawled_at": datetime.now().isoformat()
             }
             
@@ -131,7 +139,7 @@ class InternetPlugin(BasePlugin):
         return [
             ToolSchema(
                 name="search",
-                description="Поиск информации в интернете через DuckDuckGo",
+                description="Ищет информацию в интернете для твоей дальнейшей обработки",
                 parameters=[
                     ToolParameter(
                         name="query",
@@ -142,7 +150,7 @@ class InternetPlugin(BasePlugin):
             ),
             ToolSchema(
                 name="crawl",
-                description="Извлечение контента веб-страницы в формате Markdown со ссылками",
+                description="Получает контента веб-страницы в формате Markdown со ссылками для твоей дальнейшей обработки",
                 parameters=[
                     ToolParameter(
                         name="url",

@@ -17,21 +17,29 @@ from plugins.console_plugin.plugin import ConsolePlugin, IOMessage
 # Конфигурация LLM (выберите один вариант)
 LLM_CONFIG = {
     # Для Ollama (локальный):
-    #"provider": "ollama",
-    #"model": "qwen2.5",
-    #"api_key": "ollama",
+    "provider": "ollama",
+    "model": "qwen2.5",
+    "api_key": "ollama",
     
     # Для DeepSeek:
-     "provider": "deepseek",
-     "model": "deepseek-chat",
-     "api_key": Config.load().deepseek_api_key,
+     #"provider": "deepseek",
+     #"model": "deepseek-chat",
+     #"api_key": Config.load().deepseek_api_key,
      "temperature": 0.5  # Добавляем температуру (0.0 - более точные ответы, 1.0 - более креативные)
 }
 
 # Системный промпт для агента
 SYSTEM_PROMPT = """
-Ты - полезный ассистент. Для ЛЮБЫХ математических вычислений используй инструмент calculate.
-НИКОГДА не пытайся вычислять самостоятельно.
+Ты - полезный ассистент. Для математических вычислений используй инструмент calculate.
+Используй инструменты ТОЛЬКО когда это действительно необходимо:
+- calculate: ТОЛЬКО для математических вычислений
+- search: ТОЛЬКО когда нужно найти актуальную информацию
+- crawl: ТОЛЬКО когда нужно получить содержимое конкретной веб-страницы
+
+НЕ используй инструменты для:
+- Простых ответов на вопросы
+- Общих рассуждений
+- Базовых математических операций, которые можно выполнить в уме
 """.strip()
 
 #init_logging(level=logging.DEBUG)
@@ -63,7 +71,11 @@ async def main():
         
         # Подключаем обработчик к консоли с предустановленными параметрами
         console.set_message_handler(
-            partial(agent.handle_message, system_prompt=SYSTEM_PROMPT, stream=True)
+            partial(
+                agent.handle_message,
+                system_prompt=SYSTEM_PROMPT,
+                stream=True  # Включаем стриминг обратно
+            )
         )
         
         # Инициализируем плагины
