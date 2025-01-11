@@ -1,17 +1,13 @@
 import os
-import sys
 import asyncio
 import logging
 from typing import Optional
 
-# Добавляем родительскую директорию в PYTHONPATH
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from utils import Config, init_logging, setup_logger
-from llm import LLMRouter
-from core import BaseAgent
-from plugins.io.rest import RESTApiPlugin
-from plugins.storage.versioned import VersionedStoragePlugin
+from cognistruct.utils import Config, init_logging, setup_logger
+from cognistruct.llm import LLMRouter
+from cognistruct.core import BaseAgent
+from cognistruct.plugins.io.rest import RESTApiPlugin
+from cognistruct.plugins.storage.versioned import VersionedStoragePlugin
 
 # Загружаем конфигурацию
 config = Config.load()

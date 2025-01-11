@@ -1,22 +1,18 @@
 import os
-import sys
 import asyncio
 import logging
 from functools import partial
 
-# Добавляем родительскую директорию в PYTHONPATH
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from utils import Config
-from llm import LLMRouter
-from core import BaseAgent
-from plugins.tools.caulculate import CalculatorPlugin
-from plugins.io.console import ConsolePlugin
-from plugins.storage.short_memory import ShortTermMemoryPlugin
-from plugins.storage.long_memory import LongMemoryPlugin
+from cognistruct.utils import Config
+from cognistruct.llm import LLMRouter
+from cognistruct.core import BaseAgent
+from cognistruct.plugins.tools.calculate import CalculatorPlugin
+from cognistruct.plugins.io.console import ConsolePlugin
+from cognistruct.plugins.storage.short_memory import ShortTermMemoryPlugin
+from cognistruct.plugins.storage.long_memory import LongTermMemoryPlugin
 
 # Раскомментируйте для включения логирования
-#from utils.logging import init_logging
+#from cognistruct.utils.logging import init_logging
 #init_logging(level=logging.DEBUG)
 
 # Конфигурация LLM (выберите один вариант)
@@ -74,11 +70,10 @@ async def main():
             refresh_rate=10  # Частота обновления стриминга
         )
         short_memory = ShortTermMemoryPlugin(
-            max_messages=10  # Храним последние 10 сообщений
+            max_messages=10  # Максимальное количество сообщений в памяти
         )
-        long_memory = LongTermMemoryPlugin(
-            storage_file="long_memory.db"  # Файл для хранения долгосрочной памяти
-        )
+        long_memory = LongTermMemoryPlugin()
+
 
         print("👋 Добро пожаловать в продвинутый пример!")
         print(f"👉 LLM: {LLM_CONFIG['model']}")

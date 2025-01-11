@@ -20,30 +20,72 @@
 
 ## Установка
 
-### 1. Клонирование репозитория
+### Способ 1: Установка через pip (рекомендуется)
 
 ```bash
+# Клонируем репозиторий
 git clone https://github.com/jenissimo/cognistruct.git
 cd cognistruct
-```
 
-### 2. Создание и активация виртуального окружения
-
-```bash
-# Создание виртуального окружения
+# Создаем виртуальное окружение
 python -m venv venv
+source venv/bin/activate  # Для Linux/MacOS
+# или
+.\venv\Scripts\activate  # Для Windows
 
-# Активация:
-# Для Linux/macOS:
-source venv/bin/activate
-# Для Windows:
-# venv\Scripts\activate
+# Устанавливаем пакет в режиме разработки
+pip install -e .
 ```
 
-### 3. Установка зависимостей
+После установки вы можете импортировать компоненты следующим образом:
+
+```python
+from cognistruct.core import BaseAgent
+from cognistruct.llm import LLMRouter
+from cognistruct.plugins.io.console import ConsolePlugin
+```
+
+### Способ 2: Ручная установка зависимостей
 
 ```bash
+# Клонируем репозиторий
+git clone https://github.com/jenissimo/cognistruct.git
+cd cognistruct
+
+# Создаем виртуальное окружение
+python -m venv venv
+source venv/bin/activate  # Для Linux/MacOS
+# или
+.\venv\Scripts\activate  # Для Windows
+
+# Устанавливаем зависимости
 pip install -r requirements.txt
+```
+
+### Настройка конфигурации
+
+Перед использованием необходимо создать файл конфигурации. Запустите интерактивного помощника:
+
+```bash
+python setup_config.py
+```
+
+Или скопируйте пример конфигурации вручную:
+
+```bash
+cp setup_config.example.py setup_config.py
+```
+
+Отредактируйте `setup_config.py` и укажите:
+- API ключи для LLM провайдеров (OpenAI, DeepSeek, и т.д.)
+- Токен для Telegram бота (если планируете использовать)
+- Другие настройки по необходимости
+
+Конфигурация сохраняется в `~/.cognistruct/config` и может быть переопределена переменными окружения:
+
+```bash
+export DEEPSEEK_API_KEY=your_api_key
+export TELEGRAM_BOT_TOKEN=your_bot_token
 ```
 
 ---

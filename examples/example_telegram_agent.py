@@ -1,21 +1,18 @@
 import os
-import sys
 import asyncio
 import logging
+import signal
 from typing import Optional, Dict, Any
 from datetime import datetime
 from functools import partial
 
-# Добавляем родительскую директорию в PYTHONPATH
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from utils import Config, init_logging, setup_logger, get_timezone
-from llm import LLMRouter
-from core import BaseAgent
-from plugins.io.telegram import TelegramPlugin
-from plugins.tools.scheduler import SchedulerPlugin
-from plugins.tools.caulculate import CalculatorPlugin
-from plugins.tools.internet import InternetPlugin
+from cognistruct.utils import Config, init_logging, setup_logger, get_timezone
+from cognistruct.llm import LLMRouter
+from cognistruct.core import BaseAgent
+from cognistruct.plugins.io.telegram import TelegramPlugin
+from cognistruct.plugins.tools.scheduler import SchedulerPlugin
+from cognistruct.plugins.tools.calculate import CalculatorPlugin
+from cognistruct.plugins.tools.internet import InternetPlugin
 
 # Загружаем конфигурацию
 config = Config.load()
@@ -112,7 +109,6 @@ async def main():
             stop_event.set()
             
         # Устанавливаем обработчик SIGINT (Ctrl+C)
-        import signal
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(signal.SIGINT, handle_interrupt)
         
