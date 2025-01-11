@@ -12,10 +12,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import Config, init_logging, setup_logger, get_timezone
 from llm import LLMRouter
 from core import BaseAgent
-from plugins.telegram_plugin.plugin import TelegramPlugin
-from plugins.scheduler_plugin.plugin import SchedulerPlugin
-from plugins.example_plugin import CalculatorPlugin
-from plugins.internet_plugin.plugin import InternetPlugin
+from plugins.io.telegram import TelegramPlugin
+from plugins.tools.scheduler import SchedulerPlugin
+from plugins.tools.caulculate import CalculatorPlugin
+from plugins.tools.internet import InternetPlugin
 
 # Загружаем конфигурацию
 config = Config.load()

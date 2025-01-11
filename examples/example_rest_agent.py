@@ -10,8 +10,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import Config, init_logging, setup_logger
 from llm import LLMRouter
 from core import BaseAgent
-from plugins.rest_api.plugin import RESTApiPlugin
-from plugins.versioned_storage.plugin import VersionedStoragePlugin
+from plugins.io.rest import RESTApiPlugin
+from plugins.storage.versioned import VersionedStoragePlugin
 
 # Загружаем конфигурацию
 config = Config.load()

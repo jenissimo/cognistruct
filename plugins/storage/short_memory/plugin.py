@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Optional
 import asyncio
 from pathlib import Path
 
-from plugins.base_plugin import BasePlugin, PluginMetadata, IOMessage
+from core.base_plugin import BasePlugin, PluginMetadata, IOMessage
 
 
 class ShortTermMemoryPlugin(BasePlugin):

@@ -304,8 +304,8 @@ scheduler = SchedulerPlugin(
 ```python
 from core import BaseAgent
 from llm import LLMRouter
-from plugins.console_plugin import ConsolePlugin
-from plugins.example_plugin import CalculatorPlugin
+from plugins.io.console import ConsolePlugin
+from plugins.tools.calculate import CalculatorPlugin
 from functools import partial
 
 # Конфигурация LLM

@@ -8,7 +8,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from plugins.base_plugin import BasePlugin, PluginMetadata, IOMessage
+from core.base_plugin import BasePlugin, PluginMetadata, IOMessage
 from llm.interfaces import ToolSchema, ToolParameter
 
 
