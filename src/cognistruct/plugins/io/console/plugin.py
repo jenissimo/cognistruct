@@ -41,6 +41,7 @@ class ConsolePlugin(BasePlugin):
         self.message_handler: Optional[Callable[[IOMessage], Awaitable[None]]] = None
         self._running = False
         self.console = Console()
+        self._input_future: Optional[asyncio.Future] = None
         
     def get_metadata(self) -> PluginMetadata:
         return PluginMetadata(
@@ -318,3 +319,51 @@ class ConsolePlugin(BasePlugin):
                 border_style="red"
             ))
             print() 
+
+    def print_header(self, message: str):
+        """Выводит заголовок"""
+        prefix = "🔷 " if self.use_emojis else ""
+        if self.use_markdown:
+            self.console.print(Markdown(f"{prefix}**{message}**"), style="blue bold")
+        else:
+            self.console.print(f"{prefix}{message}", style="blue bold")
+            
+    def print_info(self, message: str, end: str = "\n"):
+        """Выводит информационное сообщение"""
+        prefix = "ℹ️ " if self.use_emojis else ""
+        if self.use_markdown:
+            self.console.print(Markdown(f"{prefix}{message}"), style="blue", end=end)
+        else:
+            self.console.print(f"{prefix}{message}", style="blue", end=end)
+            
+    def print_success(self, message: str):
+        """Выводит сообщение об успехе"""
+        prefix = "✅ " if self.use_emojis else ""
+        if self.use_markdown:
+            self.console.print(Markdown(f"{prefix}{message}"), style="green")
+        else:
+            self.console.print(f"{prefix}{message}", style="green")
+            
+    def print_warning(self, message: str):
+        """Выводит предупреждение"""
+        prefix = "⚠️ " if self.use_emojis else ""
+        if self.use_markdown:
+            self.console.print(Markdown(f"{prefix}{message}"), style="yellow")
+        else:
+            self.console.print(f"{prefix}{message}", style="yellow")
+            
+    def print_error(self, message: str):
+        """Выводит сообщение об ошибке"""
+        prefix = "❌ " if self.use_emojis else ""
+        if self.use_markdown:
+            self.console.print(Markdown(f"{prefix}{message}"), style="red")
+        else:
+            self.console.print(f"{prefix}{message}", style="red")
+            
+    def print_debug(self, message: str):
+        """Выводит отладочное сообщение"""
+        prefix = "🔍 " if self.use_emojis else ""
+        if self.use_markdown:
+            self.console.print(Markdown(f"{prefix}{message}"), style="dim")
+        else:
+            self.console.print(f"{prefix}{message}", style="dim") 

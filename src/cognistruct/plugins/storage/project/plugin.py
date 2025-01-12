@@ -34,7 +34,7 @@ class ProjectStoragePlugin(BasePlugin):
     - metadata: дополнительные метаданные (соавторы, теги и т.д.)
     """
     
-    def __init__(self, db_path: str = "project_storage.db"):
+    def __init__(self, db_path: str = "data/project_storage.db"):
         super().__init__()
         self._db: Optional[aiosqlite.Connection] = None
         self.db_path = db_path
