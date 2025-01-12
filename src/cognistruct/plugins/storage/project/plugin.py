@@ -68,7 +68,7 @@ class ProjectStoragePlugin(BasePlugin):
         if self._db:
             await self._db.close()
             
-    async def create_project(self, data: Dict[str, Any]) -> Project:
+    async def create(self, data: Dict[str, Any]) -> Project:
         """Создание нового проекта"""
         name = data["name"]
         description = data.get("description", "")
@@ -93,11 +93,11 @@ class ProjectStoragePlugin(BasePlugin):
             metadata=metadata
         )
         
-    async def get_project(self, project_id: int) -> Optional[Project]:
+    async def read(self, id: str) -> Optional[Project]:
         """Получение проекта по ID"""
         async with self._db.execute(
             "SELECT * FROM projects WHERE id = ?",
-            (project_id,)
+            (int(id),)
         ) as cursor:
             row = await cursor.fetchone()
         
@@ -114,11 +114,11 @@ class ProjectStoragePlugin(BasePlugin):
             metadata=json.loads(row[6])
         )
         
-    async def update_project(self, project_id: int, data: Dict[str, Any]) -> Optional[Project]:
+    async def update(self, id: str, data: Dict[str, Any]) -> bool:
         """Обновление проекта"""
-        project = await self.get_project(project_id)
+        project = await self.read(id)
         if not project:
-            return None
+            return False
             
         # Обновляем только переданные поля
         name = data.get("name", project.name)
@@ -130,29 +130,21 @@ class ProjectStoragePlugin(BasePlugin):
             UPDATE projects 
             SET name = ?, description = ?, updated_at = ?, metadata = ?
             WHERE id = ?
-        """, (name, description, timestamp, json.dumps(metadata), project_id))
+        """, (name, description, timestamp, json.dumps(metadata), int(id)))
         await self._db.commit()
         
-        return Project(
-            id=project_id,
-            user_id=project.user_id,  # Добавил user_id, который раньше пропускался
-            name=name,
-            description=description,
-            created_at=project.created_at,
-            updated_at=timestamp,
-            metadata=metadata
-        )
+        return True
         
-    async def delete_project(self, project_id: int) -> bool:
+    async def delete(self, id: str) -> bool:
         """Удаление проекта"""
         cursor = await self._db.execute(
             "DELETE FROM projects WHERE id = ?",
-            (project_id,)
+            (int(id),)
         )
         await self._db.commit()
         return cursor.rowcount > 0
         
-    async def search_projects(self, query: Dict[str, Any]) -> List[Project]:
+    async def search(self, query: Dict[str, Any]) -> List[Project]:
         """
         Поиск проектов
         
@@ -239,14 +231,14 @@ class ProjectStoragePlugin(BasePlugin):
         action = params["action"]
         
         if action == "create":
-            return await self.create_project(params["data"])
+            return await self.create(params["data"])
         elif action == "get":
-            return await self.get_project(params["project_id"])
+            return await self.read(params["project_id"])
         elif action == "update":
-            return await self.update_project(params["project_id"], params["data"])
+            return await self.update(params["project_id"], params["data"])
         elif action == "delete":
-            return await self.delete_project(params["project_id"])
+            return await self.delete(params["project_id"])
         elif action == "search":
-            return await self.search_projects(params["search_params"])
+            return await self.search(params["search_params"])
         else:
             raise ValueError(f"Unknown action: {action}") 
