@@ -21,15 +21,29 @@ class OpenAIProvider:
     api_base: str
     api_key: Optional[str] = None  # Может быть None для некоторых провайдеров
     temperature: float = 0.7  # Добавляем температуру по умолчанию
+    max_tokens: Optional[int] = None  # Максимальное количество токенов
+    is_proxy: bool = False  # Флаг использования ProxyAPI
 
 
 # Предопределенные провайдеры
 OPENAI = OpenAIProvider(
     name="openai",
-    model="gpt-3.5-turbo",
+    model="gpt-4o",
     api_base="https://api.openai.com/v1",
     api_key="",  # Заполняется из конфига
-    temperature=0.7
+    temperature=0.7,
+    max_tokens=None,
+    is_proxy=False
+)
+
+PROXYAPI = OpenAIProvider(
+    name="proxyapi",
+    model="gpt-4o",
+    api_base="https://api.proxyapi.ru/openai/v1",
+    api_key="",  # Заполняется из конфига
+    temperature=0.7,
+    max_tokens=None,
+    is_proxy=True
 )
 
 DEEPSEEK = OpenAIProvider(
@@ -37,7 +51,9 @@ DEEPSEEK = OpenAIProvider(
     model="deepseek-chat",
     api_base="https://api.deepseek.com/v1",
     api_key="",  # Заполняется из конфига
-    temperature=0.7
+    temperature=0.7,
+    max_tokens=None,
+    is_proxy=False
 )
 
 OLLAMA = OpenAIProvider(
@@ -45,7 +61,9 @@ OLLAMA = OpenAIProvider(
     model="",  # Заполняется пользователем
     api_base="http://localhost:11434/v1",
     api_key=None,  # Не требуется для локального Ollama
-    temperature=0.7
+    temperature=0.7,
+    max_tokens=None,
+    is_proxy=False
 )
 
 
@@ -66,7 +84,10 @@ class OpenAIService(BaseLLM):
             if not provider.api_key:
                 logger.error(f"API key must be provided for provider '{provider.name}'.")
                 raise ValueError(f"API key must be provided for provider '{provider.name}'")
+            
+            # OpenAI клиент сам добавляет Bearer к ключу
             api_key = provider.api_key
+                
             logger.info(f"Initialized provider '{provider.name}' with provided API key.")
 
         self.client = AsyncOpenAI(
@@ -172,6 +193,14 @@ class OpenAIService(BaseLLM):
             "stream": stream,
             **kwargs
         }
+
+        # Добавляем max_tokens если он указан в провайдере
+        if self.provider.max_tokens is not None:
+            request_params["max_tokens"] = self.provider.max_tokens
+
+        # Для ProxyAPI всегда добавляем max_tokens чтобы контролировать стоимость
+        if self.provider.is_proxy and "max_tokens" not in request_params:
+            request_params["max_tokens"] = 1000  # Разумное ограничение по умолчанию
 
         if tools:
             request_params["tools"] = convert_tool_schema(tools)

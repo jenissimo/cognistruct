@@ -1,7 +1,7 @@
 from typing import Dict, Optional, Type
 
 from cognistruct.llm.interfaces import BaseLLM
-from cognistruct.llm.openai_service import OpenAIService, OpenAIProvider, OPENAI, DEEPSEEK, OLLAMA
+from cognistruct.llm.openai_service import OpenAIService, OpenAIProvider, OPENAI, DEEPSEEK, OLLAMA, PROXYAPI
 from cognistruct.utils.logging import setup_logger
 
 logger = setup_logger(__name__)
@@ -14,6 +14,7 @@ class LLMRouter:
         # Предопределенные провайдеры
         self._providers = {
             "openai": OPENAI,
+            "proxyapi": PROXYAPI,
             "deepseek": DEEPSEEK,
             "ollama": OLLAMA
         }
@@ -29,7 +30,8 @@ class LLMRouter:
         """Возвращает экземпляр LLM по имени провайдера"""
         return self._instances.get(provider)
 
-    def create_instance(self, provider: str, api_key: str, model: Optional[str] = None, temperature: Optional[float] = None) -> BaseLLM:
+    def create_instance(self, provider: str, api_key: str, model: Optional[str] = None, 
+                     temperature: Optional[float] = None, max_tokens: Optional[int] = None) -> BaseLLM:
         """
         Создает новый экземпляр LLM
         
@@ -38,6 +40,7 @@ class LLMRouter:
             api_key: API ключ (для Ollama можно пустой)
             model: Название модели (обязательно для Ollama, опционально для других)
             temperature: Температура генерации (0.0 - 1.0)
+            max_tokens: Максимальное количество токенов в ответе
         """
         if provider not in self._providers:
             raise ValueError(f"Unknown provider: {provider}")
@@ -49,7 +52,8 @@ class LLMRouter:
             model=model or provider_config.model,  # Используем указанную модель или дефолтную
             api_base=provider_config.api_base,
             api_key=api_key,
-            temperature=temperature if temperature is not None else provider_config.temperature
+            temperature=temperature if temperature is not None else provider_config.temperature,
+            max_tokens=max_tokens if max_tokens is not None else provider_config.max_tokens
         )
             
         # Создаем экземпляр сервиса

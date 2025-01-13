@@ -12,11 +12,14 @@ def main():
     try:
         current_config = Config.load()
         has_api_key = bool(current_config.deepseek_api_key)
+        has_proxy_key = bool(current_config.proxyapi_key)
         has_telegram = bool(current_config.telegram_token)
         has_admin = bool(current_config.admin_username)
         
         if has_api_key:
             logger.info("Найден существующий DeepSeek API ключ")
+        if has_proxy_key:
+            logger.info("Найден существующий ProxyAPI ключ")
         if has_telegram:
             logger.info("Найден существующий Telegram токен")
         if has_admin:
@@ -24,11 +27,13 @@ def main():
     except:
         current_config = None
         has_api_key = False
+        has_proxy_key = False
         has_telegram = False
         has_admin = False
     
     # Запрашиваем новые значения
     api_key = input("Введите ваш DeepSeek API ключ" + (" (Enter чтобы оставить текущий)" if has_api_key else "") + ": ").strip()
+    proxy_key = input("Введите ваш ProxyAPI ключ" + (" (Enter чтобы оставить текущий)" if has_proxy_key else " (опционально)") + ": ").strip()
     telegram_token = input("Введите токен Telegram бота" + (" (Enter чтобы оставить текущий)" if has_telegram else " (опционально)") + ": ").strip()
     
     # Запрашиваем админские креденшлы для REST API
@@ -38,6 +43,8 @@ def main():
     # Сохраняем старые значения если ввод пустой
     if has_api_key and not api_key:
         api_key = current_config.deepseek_api_key
+    if has_proxy_key and not proxy_key:
+        proxy_key = current_config.proxyapi_key
     if has_telegram and not telegram_token:
         telegram_token = current_config.telegram_token
     if has_admin and not admin_username:
@@ -46,6 +53,7 @@ def main():
     
     config = Config(
         deepseek_api_key=api_key,
+        proxyapi_key=proxy_key if proxy_key else None,
         telegram_token=telegram_token if telegram_token else None,
         admin_username=admin_username if admin_username else None,
         admin_password=admin_password if admin_password else None
