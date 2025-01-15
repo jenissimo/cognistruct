@@ -243,15 +243,25 @@ class OpenAIService(BaseLLM):
                     default_tool_id = self._generate_tool_call_id()
 
                     async for chunk in stream:
-                        logger.info("Received chunk: %s", chunk)
+                        #logger.info("Received chunk: %s", chunk)
+                        if len(chunk.choices) == 0:
+                            logger.debug("Received empty choices in chunk, might be final chunk")
+                            # Если это последний чанк и у нас есть накопленный контент
+                            if current_content:
+                                yield StreamChunk(
+                                    content=current_content,
+                                    delta="",
+                                    is_complete=True
+                                )
+                            continue
                         delta = chunk.choices[0].delta
-                        logger.debug("Delta content: %s", getattr(delta, "content", None))
-                        logger.debug("Delta tool_calls: %s", getattr(delta, "tool_calls", None))
+                        #logger.debug("Delta content: %s", getattr(delta, "content", None))
+                        #logger.debug("Delta tool_calls: %s", getattr(delta, "tool_calls", None))
                         
                         # Обработка текстового контента
                         if hasattr(delta, "content") and delta.content:
                             current_content += delta.content
-                            logger.info("Yielding text chunk: %s", delta.content)
+                            #logger.info("Yielding text chunk: %s", delta.content)
                             yield StreamChunk(
                                 content=current_content,
                                 delta=delta.content,
@@ -342,12 +352,11 @@ class OpenAIService(BaseLLM):
                                         }
                                         messages.append(tool_message)
                                         
-                                        # Отправляем результат в стрим
+                                        # Отправляем только результат в стрим
                                         yield StreamChunk(
                                             content=current_content,
                                             delta="",
                                             tool_result=str(result),
-                                            tool_call=tool_call_obj,
                                             is_complete=False
                                         )
                                         

@@ -1,4 +1,5 @@
-import os,asyncio,json,logging,datetime
+import os,asyncio,json,logging
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from duckduckgo_search import DDGS
@@ -103,7 +104,6 @@ class InternetPlugin(BasePlugin):
                 remove_overlay_elements=True,  # Удаляем попапы
                 process_iframes=True,  # Обрабатываем iframe
                 cache_mode=CacheMode.BYPASS,  # Всегда свежий контент
-                fit_markdown=True  # Включаем оптимизированную версию markdown
             )
             
             result = await self._crawler.arun(url, config=run_config)
