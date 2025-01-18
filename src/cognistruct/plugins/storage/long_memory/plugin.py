@@ -48,7 +48,7 @@ class LongTermMemoryPlugin(BasePlugin):
                     ToolParameter(
                         name="fact",
                         type="string",
-                        description="Факт для запоминания"
+                        description="Факт для запоминания, наприме 'Пользователя зовут Женя'"
                     ),
                     ToolParameter(
                         name="tags",
@@ -209,22 +209,21 @@ class LongTermMemoryPlugin(BasePlugin):
             
         return f"Неизвестный инструмент: {tool_name}"
         
-    async def rag_hook(self, query: str) -> Dict[str, Any]:
+    async def rag_hook(self, message: IOMessage) -> Dict[str, Any]:
         """Добавляет релевантные воспоминания в контекст"""
-        memories = await self.search_memories(query)
+        if not isinstance(message, IOMessage):
+            return {}
         
+        query = message.content  # Используем контент сообщения как запрос
+        if not isinstance(query, str):
+            return {}
+        
+        memories = await self.search_memories(query)
         if not memories:
             return {}
-            
-        # Обновляем время доступа
-        for memory in memories:
-            await self.update_access_time(memory["id"])
-            
-        # Форматируем воспоминания для контекста
-        context = []
-        for memory in memories:
-            context.append(f"Факт: {memory['content']}")
-            
+        
         return {
-            "long_term_memories": "\n".join(context)
+            "relevant_memories": "\n".join(
+                f"Memory: {memory.content}" for memory in memories
+            )
         } 
