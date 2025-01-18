@@ -1,32 +1,18 @@
-from typing import Dict, List, Any, Optional, Union, AsyncGenerator
-from dataclasses import dataclass, field
-import time
+"""Базовые классы для плагинов"""
 
-from cognistruct.llm.interfaces import StreamChunk
-from cognistruct.core.context import GlobalContext
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, List, AsyncGenerator
 
+from .messages import IOMessage
+from .context import GlobalContext
 
 @dataclass
 class PluginMetadata:
     """Метаданные плагина"""
     name: str
     description: str = ""
-    version: str = "0.1.0"
-    author: str = ""
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    priority: int = 0
-
-
-@dataclass
-class IOMessage:
-    """Сообщение для I/O хуков"""
-    type: str = "text"           # Тип сообщения (text, image, action, stream, etc)
-    content: Any = None          # Содержимое сообщения
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Дополнительные данные
-    source: str = ""            # Источник сообщения
-    timestamp: float = field(default_factory=time.time)  # Время создания
-    stream: Optional[AsyncGenerator[StreamChunk, None]] = None  # Стрим для потоковой генерации
-
+    version: str = "1.0.0"
+    priority: int = 0  # Приоритет для сортировки (больше - важнее)
 
 class BasePlugin:
     """
@@ -207,9 +193,76 @@ class BasePlugin:
             message: Исходящее сообщение
             
         Returns:
-            Модифицированное сообщение или None если сообщение не нужно отправлять
+            Optional[IOMessage]: Модифицированное сообщение или None если сообщение не нужно отправлять
         """
         return message
+        
+    async def streaming_output_hook(self, message: IOMessage) -> AsyncGenerator[IOMessage, None]:
+        """
+        Обработка потоковых сообщений. Этот хук вызывается для сообщений с типом "stream".
+        
+        Плагины могут переопределить этот метод для:
+        - Модификации чанков стрима
+        - Добавления своей логики обработки
+        - Фильтрации или агрегации чанков
+        
+        Args:
+            message: Стрим-сообщение с полем stream, содержащим AsyncGenerator[IOMessage, None]
+            
+        Yields:
+            IOMessage: Обработанные чанки данных
+        """
+        if not message.stream:
+            yield message
+            return
+            
+        # Создаем новый генератор, который будет обрабатывать чанки
+        async def process_stream():
+            async for chunk in message.stream:
+                processed_chunk = self._process_stream_chunk(chunk)
+                if processed_chunk is not None:
+                    yield processed_chunk
+        
+        # Создаем новое сообщение с новым генератором
+        new_message = IOMessage(
+            type=message.type,
+            content=message.content,
+            metadata=message.metadata,
+            source=message.source,
+            is_async=message.is_async,
+            stream=process_stream()
+        )
+        
+        yield new_message
+
+    def _process_stream_chunk(self, chunk: IOMessage) -> Optional[IOMessage]:
+        """
+        Обработка отдельного чанка стрима. Этот метод вызывается для каждого чанка в streaming_output_hook.
+        
+        Плагины могут переопределить этот метод для:
+        - Модификации содержимого чанка
+        - Фильтрации чанков (возврат None для пропуска)
+        - Добавления метаданных
+        
+        Args:
+            chunk: Входящий чанк (обычно с типом "stream_chunk")
+            
+        Returns:
+            Optional[IOMessage]: Обработанный чанк или None если чанк нужно пропустить
+            
+        Example:
+            ```python
+            def _process_stream_chunk(self, chunk: IOMessage) -> Optional[IOMessage]:
+                # Пропускаем пустые чанки
+                if not chunk.content:
+                    return None
+                    
+                # Добавляем timestamp в метаданные
+                chunk.metadata["processed_at"] = time.time()
+                return chunk
+            ```
+        """
+        return chunk
 
     def register_input_type(self, message_type: str):
         """Регистрирует поддерживаемый тип входящих сообщений"""

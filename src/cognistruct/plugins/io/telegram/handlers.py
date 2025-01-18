@@ -89,7 +89,7 @@ class TelegramHandlers:
         )
             
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка входящих сообщений"""
+        """Обработка входящих сообщений из Telegram"""
         logger.debug("Received message in handle_message")
         
         if not update.message or not update.message.text:
@@ -101,7 +101,7 @@ class TelegramHandlers:
         
         logger.debug(f"Processing message: {text[:50]}...")
         
-        # Создаем IOMessage
+        # Создаем IOMessage из телеграм сообщения
         message = IOMessage(
             type="telegram_message",
             content=text,
@@ -112,15 +112,23 @@ class TelegramHandlers:
             }
         )
         
-        # Отправляем индикатор набора
+        # Показываем начальный индикатор набора
         await self.bot.send_chat_action(chat_id=chat_id, action="typing")
         
-        # Вызываем обработчик если он установлен
+        # Передаем сообщение в обработчик
         if self.message_handler:
             try:
-                logger.debug("Calling message handler")
-                await self.message_handler(message)
-                logger.debug("Message handler completed")
+                logger.debug("Passing message to handler")
+                response = await self.message_handler(message)
+                
+                # Если ответ - генератор, итерируемся по нему
+                if hasattr(response, '__aiter__'):
+                    logger.debug("Got streaming response, starting iteration")
+                    async for chunk in response:
+                        # Просто проходим по чанкам, их обработка уже в streaming_output_hook
+                        pass
+                        
+                logger.debug("Message processing completed")
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
                 await update.message.reply_text(

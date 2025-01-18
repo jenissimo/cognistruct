@@ -10,7 +10,7 @@ from cognistruct.plugins.tools.calculate import CalculatorPlugin
 from cognistruct.plugins.io.console import ConsolePlugin
 
 # Раскомментируйте для включения логирования
-#from cognistruct.utils.logging import init_logging
+from cognistruct.utils.logging import init_logging
 #init_logging(level=logging.DEBUG)
 
 # Конфигурация LLM (выберите один вариант)
@@ -24,21 +24,18 @@ LLM_CONFIG = {
      "provider": "deepseek",
      "model": "deepseek-chat",
      "api_key": Config.load().deepseek_api_key,
-     "temperature": 0.5  # Добавляем температуру (0.0 - более точные ответы, 1.0 - более креативные)
+
+    "provider": "proxyapi",
+    "model": "gpt-4o",
+    "api_key": Config.load().proxyapi_key,
+    "max_tokens": 8192,
+
+    "temperature": 0.7  # Добавляем температуру (0.0 - более точные ответы, 1.0 - более креативные)
 }
 
 # Системный промпт для агента
 SYSTEM_PROMPT = """
 Ты - полезный ассистент. Для математических вычислений используй инструмент calculate.
-Используй инструменты ТОЛЬКО когда это действительно необходимо:
-- calculate: ТОЛЬКО для математических вычислений
-- search: ТОЛЬКО когда нужно найти актуальную информацию
-- crawl: ТОЛЬКО когда нужно получить содержимое конкретной веб-страницы
-
-НЕ используй инструменты для:
-- Простых ответов на вопросы
-- Общих рассуждений
-- Базовых математических операций, которые можно выполнить в уме
 """.strip()
 
 async def main():
@@ -71,7 +68,7 @@ async def main():
             partial(
                 agent.handle_message,
                 system_prompt=SYSTEM_PROMPT,
-                stream=True  # Включаем стриминг обратно
+                stream=True
             )
         )
         

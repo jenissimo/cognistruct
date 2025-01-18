@@ -43,7 +43,7 @@ SYSTEM_PROMPT = """
 Используй инструменты только когда это действительно нужно.
 """.strip()
 
-#init_logging(level=logging.DEBUG)
+init_logging(level=logging.DEBUG)
 logger = setup_logger(__name__)
 
 async def main():

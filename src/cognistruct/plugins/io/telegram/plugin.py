@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, AsyncGenerator
 import json
 from datetime import datetime
 import logging
@@ -142,83 +142,100 @@ class TelegramPlugin(BasePlugin):
             return message
             
         chat_id = self._current_chat_id
-        logger.debug(f"====== Output hook called with message: {message}")
+        logger.debug(f"Output hook called with message: {message}")
         
         try:
-            # Обрабатываем стриминг
-            if message.type == "stream":
-                current_content = ""
-                typing_interval = 4.0
-                last_typing = 0
-                
-                async for chunk in message.stream:
-                    # Обновляем статус набора с интервалом
-                    current_time = time.time()
-                    if current_time - last_typing >= typing_interval:
-                        await self.send_typing(chat_id)
-                        last_typing = current_time
-                        
-                    if chunk.tool_call:
-                        current_content += "🔧 Использую инструмент: " + chunk.tool_call.tool + "\n"
+            content = ""
+            
+            # Обрабатываем tool_calls если есть
+            tool_calls = message.get_tool_calls()
+            if tool_calls:
+                for tool_call in tool_calls:
+                    if "call" in tool_call:
+                        content += f"\n🔧 Использую инструмент: {tool_call['call']['function']['name']}\n"
+                    if "result" in tool_call:
+                        content += f"✅ Результат: {tool_call['result']['content']}\n"
+            
+            content += str(message.content) if message.content is not None else ""
 
-                    if chunk.delta:
-                        current_content += chunk.delta
-                
-                # Отправляем финальное сообщение
-                boxes = await format_message(current_content)
-                for item in boxes:
-                    await send_content_box(self.bot, chat_id, item)
-                    
-            # Обрабатываем обычный текст
-            elif message.type == "text":
-                # Извлекаем текст из LLMResponse
-                content = message.content.content if hasattr(message.content, 'content') else str(message.content)
+            # Отправляем сообщение если есть контент
+            if content:
                 boxes = await format_message(content)
                 for item in boxes:
                     await send_content_box(self.bot, chat_id, item)
                     
-            # Обрабатываем действия (typing, etc)
-            elif message.type == "action":
-                await self.bot.send_chat_action(
-                    chat_id=chat_id,
-                    action=message.content
-                )
-                
-            # Обрабатываем запросы на подтверждение
-            elif message.type == "confirmation_request":
-                expires_in = message.metadata.get("expires_in", 3600)
-                
-                # Создаем запрос на подтверждение
-                confirmation_id = await self.db.create_confirmation(
-                    message=message.content,
-                    chat_id=chat_id,
-                    callback_data=message.metadata.get("callback_data", ""),
-                    expires_in=expires_in
-                )
-                
-                keyboard = [
-                    [
-                        {"text": "✅ Подтвердить", "callback_data": f"confirm_{confirmation_id}"},
-                        {"text": "❌ Отклонить", "callback_data": f"reject_{confirmation_id}"}
-                    ]
-                ]
-                
-                await self.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"Требуется подтверждение:\n\n{message.content}",
-                    reply_markup={"inline_keyboard": keyboard}
-                )
-                    
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
             # В случае ошибки пробуем отправить без форматирования
-            content = message.content.content if hasattr(message.content, 'content') else str(message.content)
             await self.bot.send_message(
                 chat_id=chat_id,
-                text=content
+                text=str(message.content)
             )
                     
         return message
+
+    async def streaming_output_hook(self, message: IOMessage) -> AsyncGenerator[IOMessage, None]:
+        """Обработка стриминга для Telegram.
+        
+        Показывает индикатор набора пока идет генерация.
+        Само сообщение будет отправлено через output_hook.
+        """
+        logger.debug("Processing stream in Telegram plugin")
+        
+        if not message.stream:
+            logger.warning("No stream in message")
+            yield message
+            return
+            
+        chat_id = message.metadata.get("chat_id")
+        if not chat_id:
+            logger.error("No chat_id in metadata")
+            yield message
+            return
+            
+        last_typing = 0
+        TYPING_INTERVAL = 4  # Интервал обновления typing в секундах
+        
+        try:
+            logger.debug("Starting to iterate over message.stream")
+            
+            # Создаем новый генератор для стрима
+            async def process_stream():
+                nonlocal last_typing
+                
+                async for chunk in message.stream:
+                    now = time.time()
+                    
+                    # Обновляем индикатор набора каждые TYPING_INTERVAL секунд
+                    if now - last_typing > TYPING_INTERVAL:
+                        await self.bot.send_chat_action(
+                            chat_id=chat_id, 
+                            action="typing"
+                        )
+                        last_typing = now
+                    
+                    yield chunk
+            
+            # Создаем новое сообщение со стримом
+            new_message = IOMessage(
+                type=message.type,
+                content=message.content,
+                metadata=message.metadata,
+                source=message.source,
+                is_async=True,
+                tool_calls=message.tool_calls.copy() if message.tool_calls else [],
+                stream=process_stream()
+            )
+            
+            # Передаем сообщение дальше
+            logger.debug(f"Yielding message to next plugin: {new_message}")
+            yield new_message
+            
+            logger.debug("Finished iterating over message.stream")
+                
+        except Exception as e:
+            logger.error(f"Error in streaming_output_hook: {e}", exc_info=True)
+            raise
         
     async def check_chat_link(self, user_id: str) -> Optional[str]:
         """

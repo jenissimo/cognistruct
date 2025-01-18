@@ -37,9 +37,9 @@ class InternetPlugin(BasePlugin):
     def get_metadata(self) -> PluginMetadata:
         return PluginMetadata(
             name="internet",
-            description="Поиск и извлечение информации из интернета",
-            version="0.1.0",
-            author="Cognistruct"
+            description="Поиск информации в интернете",
+            version="1.0.0",
+            priority=10
         )
         
     async def setup(self):

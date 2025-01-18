@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional, Any, Callable, Awaitable
+from typing import Optional, Any, Callable, Awaitable, AsyncGenerator
 import sys
 from rich import print
 from rich.markdown import Markdown
@@ -9,7 +9,9 @@ from rich.text import Text
 from rich.console import Group, Console
 
 from cognistruct.core import BasePlugin, PluginMetadata, IOMessage
-from cognistruct.llm.interfaces import StreamChunk
+from cognistruct.utils.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class ConsolePlugin(BasePlugin):
@@ -42,6 +44,7 @@ class ConsolePlugin(BasePlugin):
         self._running = False
         self.console = Console()
         self._input_future: Optional[asyncio.Future] = None
+        self._current_stream: Optional[Live] = None
         
     def get_metadata(self) -> PluginMetadata:
         return PluginMetadata(
@@ -76,10 +79,14 @@ class ConsolePlugin(BasePlugin):
                 
                 # Передаем сообщение обработчику
                 if self.message_handler:
-                    await self.message_handler(message)
-                    
+                    response = await self.message_handler(message)
+                    if hasattr(response, '__aiter__'):
+                        logger.debug("Got streaming response, starting iteration")
+                        async for chunk in response:
+                            # Просто проходим по чанкам, их обработка уже в streaming_output_hook
+                            pass
+                
             except KeyboardInterrupt:
-                # Очищаем буфер ввода и печатаем новую строку
                 print("\033[2K\033[G", end="")
                 print("\n👋 Работа прервана пользователем")
                 break
@@ -109,8 +116,15 @@ class ConsolePlugin(BasePlugin):
         Returns:
             str если return_str=True, иначе None
         """
-        # Формируем базовый текст
-        tool_name = tool_call.tool if hasattr(tool_call, 'tool') else str(tool_call)
+        # Получаем имя инструмента
+        if isinstance(tool_call, dict) and 'function' in tool_call:
+            tool_name = tool_call['function']['name']
+        elif hasattr(tool_call, 'function') and hasattr(tool_call.function, 'name'):
+            tool_name = tool_call.function.name
+        else:
+            tool_name = str(tool_call)
+            
+        # Формируем текст
         prefix = "🔧 " if self.use_emojis else ""
         text = f"> {prefix}**Использую инструмент**: {tool_name}..."
         
@@ -125,20 +139,31 @@ class ConsolePlugin(BasePlugin):
             plain_text = text.replace('**', '')
             self.console.print(plain_text, style="yellow")
             
-    def print_tool_result(self, result: str, return_str: bool = False) -> Optional[str]:
+    def print_tool_result(self, result: Any, return_str: bool = False) -> Optional[str]:
         """
         Форматирует и печатает результат инструмента
         
         Args:
-            result: Результат работы инструмента
+            result: Результат работы инструмента (словарь или строка)
             return_str: Вернуть строку вместо печати
             
         Returns:
             str если return_str=True, иначе None
         """
-        # Формируем базовый текст
+        # Извлекаем результат из словаря если это словарь
+        if isinstance(result, dict):
+            if "answer" in result:
+                result_text = result["answer"]
+            elif "error" in result:
+                result_text = f"Ошибка: {result['error']}"
+            else:
+                result_text = str(result)
+        else:
+            result_text = str(result)
+        
+        # Формируем текст
         prefix = "✅ " if self.use_emojis else ""
-        text = f"> {prefix}**Результат**: {result}"
+        text = f"> {prefix}**Результат**: {result_text}"
         
         if return_str:
             return text
@@ -277,48 +302,179 @@ class ConsolePlugin(BasePlugin):
         else:
             return await self.handle_regular_stream(message, stream)
 
-    async def output_hook(self, message: IOMessage):
-        """Выводит сообщения в консоль"""
+    async def streaming_output_hook(self, message: IOMessage) -> AsyncGenerator[IOMessage, None]:
+        """
+        Обрабатывает потоковые сообщения с поддержкой Markdown и обычного текста.
         
-        if message.type == "stream" and message.stream:
-            # Обрабатываем стриминг напрямую
-            await self.handle_stream(message.content, message.stream)
+        Args:
+            message: Стрим-сообщение
+        """
+        logger.debug("streaming_output_hook called with message: %s", message)
+        
+        if not message.stream:
+            logger.debug("No stream in message, yielding as is")
+            yield message
             return
+            
+        # Состояние стрима
+        if not hasattr(self, '_stream_state'):
+            logger.debug("Initializing stream state")
+            self._stream_state = {
+                'sections': [{"type": "text", "content": ""}],  # Начальная текстовая секция
+                'current_content': "",
+                'current_tool': None
+            }
+            
+            # Создаем Live панель
+            self._current_stream = Live(
+                self._render_sections(),
+                console=self.console,
+                refresh_per_second=self.refresh_rate,
+                vertical_overflow="visible",
+                auto_refresh=True,
+                transient=True
+            )
+            self._current_stream.start()
+            logger.debug("Live panel started")
+            
+        try:
+            # Создаем новый генератор для стрима
+            async def process_stream():
+                async for chunk in message.stream:
+                    logger.debug("Processing chunk: %s", chunk)
+                    # Обновляем отображение
+                    if chunk.metadata.get("delta"):
+                        delta = chunk.metadata["delta"]
+                        logger.debug("Got delta: %s", delta)
+                        # Добавляем текст в последнюю текстовую секцию
+                        for section in reversed(self._stream_state['sections']):
+                            if section["type"] == "text":
+                                section["content"] += delta
+                                break
+                        self._stream_state['current_content'] += delta
+                    
+                    # Обрабатываем tool_calls
+                    if chunk.tool_calls:
+                        logger.debug("Processing tool calls: %s", chunk.tool_calls)
+                        last_call = chunk.tool_calls[-1]
+                        if "call" in last_call and "result" in last_call:
+                            self._stream_state['sections'].append({"type": "tool", "content": last_call["call"]})
+                            self._stream_state['sections'].append({
+                                "type": "result", 
+                                "content": last_call["result"]["content"]
+                            })
+                            self._stream_state['sections'].append({"type": "text", "content": ""})
+                    
+                    # Обновляем отображение
+                    self._current_stream.update(self._render_sections())
+                    logger.debug("Updated live panel")
+                    
+                    # Проверяем завершение
+                    if chunk.metadata.get("is_complete"):
+                        logger.debug("Stream complete, stopping live panel")
+                        self._current_stream.stop()
+                        self.console.print(self._render_sections())
+                        self._current_stream = None
+                        delattr(self, '_stream_state')
+                        
+                    yield chunk
+            
+            # Создаем новое сообщение со стримом
+            new_message = IOMessage(
+                type=message.type,
+                content=message.content,
+                metadata=message.metadata,
+                source=message.source,
+                is_async=True,
+                tool_calls=message.tool_calls.copy() if message.tool_calls else [],
+                stream=process_stream()
+            )
+            
+            logger.debug("Yielding new message with stream")
+            yield new_message
+            
+        except Exception as e:
+            logger.error(f"Error in streaming_output_hook: {e}", exc_info=True)
+            if self._current_stream:
+                self._current_stream.stop()
+                self._current_stream = None
+            if hasattr(self, '_stream_state'):
+                delattr(self, '_stream_state')
+            raise
+
+    def _render_sections(self) -> Panel:
+        """Рендерит все секции в одну панель"""
+        rendered = []
+        for section in self._stream_state['sections']:
+            if section["type"] == "text":
+                rendered.append(Markdown(section["content"]))
+            elif section["type"] == "tool":
+                rendered.append(
+                    Markdown(f"> 🔧 **Использую инструмент**: {section['content']['function']['name']}...")
+                )
+            elif section["type"] == "result":
+                rendered.append(
+                    Markdown(f"> ✅ **Результат**: {section['content']}")
+                )
+                rendered.append(Text())
         
-        # Для остальных типов сообщений
-        if message.type in ["message", "text"]:
+        return Panel(
+            Group(*rendered),
+            title="🤖 Ответ",
+            border_style="blue",
+            padding=(0, 1)
+        )
+
+    async def output_hook(self, message: IOMessage) -> Optional[IOMessage]:
+        """
+        Обрабатывает не-стриминговые сообщения
+        
+        Args:
+            message: Сообщение для обработки
+            
+        Returns:
+            Optional[IOMessage]: Обработанное сообщение или None
+        """
+        # Пропускаем асинхронные сообщения, так как они уже были обработаны в streaming_output_hook
+        if message.is_async:
+            return message
+            
+        if message.type == "text":
             prefix = "🤖 " if self.use_emojis else "Bot: "
+            content = str(message.content) if message.content is not None else ""
             
-            # Извлекаем контент и форматируем его
-            content = message.content.content if hasattr(message.content, 'content') else str(message.content)
-            content = self.format_output(content)
-            
-            # Если есть tool_calls в LLMResponse, выводим их перед основным контентом
-            if hasattr(message.content, 'tool_calls') and message.content.tool_calls:
-                for tool_call in message.content.tool_calls:
-                    self.print_tool_call(tool_call)
-                    # Результат инструмента уже включен в основной контент
+            # Обрабатываем tool_calls если есть
+            tool_calls = message.get_tool_calls()
+            if tool_calls:
+                for tool_call in tool_calls:
+                    if "call" in tool_call:
+                        self.print_tool_call(tool_call["call"])
+                    if "result" in tool_call:
+                        self.print_tool_result(tool_call["result"]["content"])
             
             # Выводим основной контент
-            if self.use_markdown:
-                self.console.print(Panel(
-                    Markdown(content),
-                    title=prefix.strip(),
-                    border_style="blue"
-                ))
-            else:
-                print(f"{prefix}{content}")
-            print()
+            if content:  # Выводим только если есть что выводить
+                if self.use_markdown:
+                    self.console.print(Panel(
+                        Markdown(content),
+                        title=prefix.strip(),
+                        border_style="blue"
+                    ))
+                else:
+                    print(f"{prefix}{content}")
+                print()
             
         elif message.type == "error":
-            print("[DEBUG] Handling error message", file=sys.stderr)
             prefix = "❌ " if self.use_emojis else "Error: "
+            error_content = str(message.content) if message.content is not None else "Unknown error"
             self.console.print(Panel(
-                Text(message.content, style="red"),
+                Text(error_content, style="red"),
                 title=prefix.strip(),
                 border_style="red"
             ))
-            print() 
+            print()
+        
+        return message
 
     def print_header(self, message: str):
         """Выводит заголовок"""
