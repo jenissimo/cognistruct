@@ -1,3 +1,3 @@
-from .plugin import ShortTermMemoryPlugin
+from .plugin import ShortMemoryPlugin
 
-__all__ = ['ShortTermMemoryPlugin'] 
+__all__ = ['ShortMemoryPlugin'] 

@@ -190,9 +190,12 @@ class OpenAIService(BaseLLM):
             "model": self.provider.model,
             "messages": messages,
             "temperature": temperature,
-            "stream": stream,
-            **kwargs
+            "stream": stream
         }
+
+        # Добавляем user_id в метаданные из kwargs
+        if "response_format" in kwargs:
+            request_params["response_format"] = kwargs["response_format"]
 
         # Добавляем max_tokens если он указан в провайдере
         if self.provider.max_tokens is not None:
@@ -206,6 +209,9 @@ class OpenAIService(BaseLLM):
             request_params["tools"] = convert_tool_schema(tools)
             # Используем "none" по умолчанию, чтобы модель не использовала инструменты без необходимости
             request_params["tool_choice"] = kwargs.get("tool_choice", "auto")
+
+        print("=== available tools ===")
+        print(request_params["tools"])
 
         if stream:
             return self._generate_stream_response(request_params)
@@ -407,95 +413,136 @@ class OpenAIService(BaseLLM):
         request_params: Dict[str, Any]
     ) -> LLMResponse:
         """Генерирует обычный (не потоковый) ответ"""
-        current_messages = request_params.get("messages", []).copy()
-        tool_messages = []
-        final_content = ""
-        iteration = 0
-        used_tool_calls = set()  # Множество для отслеживания использованных вызовов
-        
-        while iteration < self.max_iterations:
-            iteration += 1
-            logger.info(f"Starting iteration {iteration}/{self.max_iterations}")
+        try:
+            messages = request_params.get("messages", []).copy()
+            tools = request_params.get("tools", [])
+            response_format = request_params.get("response_format")
+            used_tool_calls = set()  # Для отслеживания уже использованных инструментов
+            tool_messages = []  # Сохраняем все сообщения связанные с инструментами
             
-            try:
-                # Добавляем температуру в параметры запроса
-                current_request_params = request_params.copy()
-                current_request_params["messages"] = current_messages
-                current_request_params["temperature"] = self.provider.temperature
+            while True:  # Цикл для обработки вызовов инструментов
+                response = await self.client.chat.completions.create(**request_params)
+                choice = response.choices[0]
+                message = choice.message
                 
-                response = await self.client.chat.completions.create(**current_request_params)
-                message = response.choices[0].message
-                
-                # Добавляем сообщение от ассистента
-                message_dict = message.model_dump()
-                current_messages.append(message_dict)
-                tool_messages.append(message_dict)
-                
-                # Проверяем наличие tool_calls
-                tool_calls = message_dict.get('tool_calls') or []
-                if tool_calls:  # Если есть tool_calls
-                    # Обрабатываем инструменты
-                    for tool_call in tool_calls:
-                        # Получаем имя и аргументы инструмента
-                        tool_name = tool_call['function']['name']
-                        tool_args = tool_call['function']['arguments']
-                        
-                        # Проверяем на повторный вызов
-                        tool_key = f"{tool_name}:{tool_args}"
-                        if tool_key in used_tool_calls:
-                            logger.warning(f"Skipping duplicate tool call: {tool_key}")
-                            continue
-                            
+                # Если есть вызовы инструментов
+                if message.tool_calls:
+                    current_tool_calls = []  # Сохраняем текущие вызовы
+                    tool_responses = []  # Сохраняем ответы инструментов
+                    
+                    # Сначала добавляем сообщение ассистента с вызовами
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments
+                                }
+                            } for tc in message.tool_calls
+                        ]
+                    }
+                    messages.append(assistant_message)
+                    tool_messages.append(assistant_message)
+                    
+                    # Затем обрабатываем каждый вызов
+                    for tool_call in message.tool_calls:
                         try:
-                            args = json.loads(tool_args)
-                            used_tool_calls.add(tool_key)  # Добавляем в использованные
+                            # Получаем имя и аргументы инструмента
+                            tool_name = tool_call.function.name
+                            tool_args = tool_call.function.arguments
                             
+                            # Проверяем на дубликат
+                            tool_key = f"{tool_name}:{tool_args}"
+                            if tool_key in used_tool_calls:
+                                logger.warning(f"Skipping duplicate tool call: {tool_key}")
+                                # Даже для пропущенных вызовов нужно добавить ответ
+                                tool_responses.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": "Skipped duplicate tool call"
+                                })
+                                continue
+                                
+                            used_tool_calls.add(tool_key)
+                            
+                            # Создаем объект вызова для ответа
                             tool_call_obj = ToolCall(
                                 tool=tool_name,
-                                params=args
+                                params=json.loads(tool_args)
                             )
+                            current_tool_calls.append(tool_call_obj)
                             
                             # Выполняем инструмент
                             result = await self.tool_executor(
-                                tool_name,
-                                **args
+                                tool_call_obj.tool,
+                                **tool_call_obj.params
                             )
                             
-                            # Добавляем результат
-                            tool_message = {
+                            # Создаем сообщение с результатом в правильном формате
+                            tool_response = {
                                 "role": "tool",
-                                "content": json.dumps({"answer": str(result)}),
-                                "tool_call_id": tool_call.get('id', 'unknown')
+                                "tool_call_id": tool_call.id,  # Важно использовать именно id из вызова
+                                "content": str(result)  # Результат должен быть строкой
                             }
+                            tool_responses.append(tool_response)
+                            tool_messages.append(tool_response)
                             
-                            current_messages.append(tool_message)
-                            tool_messages.append(tool_message)
-                            
-                        except json.JSONDecodeError as e:
-                            logger.error("Failed to parse tool arguments: %s", e)
-                            continue
-                            
-                    continue  # Продолжаем цикл с обновленными сообщениями
+                        except Exception as e:
+                            logger.error(f"Tool execution failed: {e}")
+                            # Даже при ошибке добавляем сообщение с результатом
+                            error_response = {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": f"Error: {str(e)}"
+                            }
+                            tool_responses.append(error_response)
+                            tool_messages.append(error_response)
+                    
+                    # Добавляем все ответы инструментов после сообщения ассистента
+                    messages.extend(tool_responses)
+                    
+                    # Обновляем параметры запроса
+                    request_params["messages"] = messages
+                    continue
                 
-                # Если нет tool_calls, значит это финальный ответ
-                final_content = message_dict.get('content', '')
-                break
+                # Проверяем формат ответа
+                if response_format and response_format.get("type") == "json_object":
+                    try:
+                        content = json.loads(message.content)
+                        return LLMResponse(
+                            content=json.dumps(content, ensure_ascii=False),
+                            finish_reason=choice.finish_reason,
+                            tool_calls=current_tool_calls if 'current_tool_calls' in locals() else None,
+                            tool_messages=tool_messages
+                        )
+                    except json.JSONDecodeError:
+                        content = {
+                            "response": message.content,
+                            "is_last": False
+                        }
+                        return LLMResponse(
+                            content=json.dumps(content, ensure_ascii=False),
+                            finish_reason=choice.finish_reason,
+                            tool_calls=current_tool_calls if 'current_tool_calls' in locals() else None,
+                            tool_messages=tool_messages
+                        )
                 
-            except Exception as e:
-                logger.error("API request failed: %s", str(e))
-                logger.exception("Full traceback:")
-                raise RuntimeError(f"API request failed: {str(e)}")
+                # Обычный текстовый ответ
+                return LLMResponse(
+                    content=message.content,
+                    finish_reason=choice.finish_reason,
+                    tool_calls=current_tool_calls if 'current_tool_calls' in locals() else None,
+                    tool_messages=tool_messages
+                )
                 
-        if iteration >= self.max_iterations:
-            error_msg = f"Reached maximum number of iterations ({self.max_iterations})"
-            logger.warning(error_msg)
-            final_content = error_msg
-            
-        return LLMResponse(
-            content=final_content,
-            tool_calls=[],  # Не передаем tool_calls, так как они уже обработаны
-            tool_messages=tool_messages
-        )
+        except Exception as e:
+            logger.error(f"API request failed: {str(e)}")
+            logger.error("Full traceback:", exc_info=True)
+            raise RuntimeError(f"API request failed: {str(e)}")
 
     async def close(self):
         """Закрывает соединение с API"""

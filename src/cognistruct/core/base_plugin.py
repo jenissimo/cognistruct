@@ -26,6 +26,8 @@ class IOMessage:
     source: str = ""            # Источник сообщения
     timestamp: float = field(default_factory=time.time)  # Время создания
     stream: Optional[AsyncGenerator[StreamChunk, None]] = None  # Стрим для потоковой генерации
+    tool_calls: Optional[List[Dict[str, Any]]] = None  # Инструменты, вызванные в ответе
+    tool_messages: Optional[List[Dict[str, Any]]] = None  # Сообщения, связанные с инструментами
 
 
 class BasePlugin:

@@ -1,6 +1,7 @@
 import importlib
 import os
-from typing import Dict, List, Optional, Type, Any, Tuple
+from typing import Dict, List, Optional, Type, Any, Tuple, Set
+from contextlib import contextmanager, asynccontextmanager
 
 from .base_plugin import BasePlugin, IOMessage
 from cognistruct.utils.logging import setup_logger
@@ -17,6 +18,7 @@ class PluginManager:
         self._plugin_classes: Dict[str, Type[BasePlugin]] = {}
         self._input_handlers: Dict[str, List[BasePlugin]] = {}  # type -> [plugins]
         self._output_handlers: Dict[str, List[BasePlugin]] = {}  # type -> [plugins]
+        self._allowed_tools: Optional[Set[str]] = None  # Добавляем список разрешенных инструментов
 
     def register_plugin_class(self, name: str, plugin_class: Type[BasePlugin]):
         """Регистрирует класс плагина"""
@@ -198,9 +200,26 @@ class PluginManager:
         
         raise ValueError(f"Tool {tool_name} not found in any plugin") 
 
+    @asynccontextmanager
+    async def limit_tools(self, allowed_tools: List[str]):
+        """Временно ограничивает доступные инструменты"""
+        previous = self._allowed_tools
+        try:
+            self._allowed_tools = set(allowed_tools)
+            yield
+        finally:
+            self._allowed_tools = previous
+            
     def get_all_tools(self) -> List[Dict[str, Any]]:
-        """Возвращает список всех доступных инструментов от всех плагинов"""
+        """Возвращает список доступных инструментов от всех плагинов"""
         tools = []
         for plugin in self.get_all_plugins():
-            tools.extend(plugin.get_tools())
+            plugin_tools = plugin.get_tools()
+            if self._allowed_tools is not None:
+                # Фильтруем инструменты если есть ограничения
+                plugin_tools = [
+                    tool for tool in plugin_tools 
+                    if tool.name in self._allowed_tools
+                ]
+            tools.extend(plugin_tools)
         return tools 

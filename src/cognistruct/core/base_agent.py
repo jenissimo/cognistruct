@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 
+from cognistruct.core import IOMessage
 from cognistruct.llm import BaseLLM
 from cognistruct.llm.interfaces import StreamChunk, ToolCall
 from .plugin_manager import PluginManager
@@ -73,6 +74,7 @@ class BaseAgent:
     async def _execute_tool_call(self, tool_calls: List[ToolCall], response_type: str = "text") -> str:
         """Выполняет вызов инструмента и форматирует результат"""
         logger.info("Executing %d tool calls", len(tool_calls))
+        print("=== вызываем инструмент ===")
         print(tool_calls)
 
         if response_type == "json":
@@ -140,32 +142,19 @@ class BaseAgent:
 
     async def process_message(
         self,
-        message: str,
+        message: Union[str, IOMessage],
         system_prompt: Optional[str] = None,
         stream: bool = False,
         **kwargs
     ) -> Union[str, AsyncGenerator[StreamChunk, None]]:
-        """
-        Обрабатывает входящее сообщение
-        
-        Args:
-            message: Входящее сообщение
-            system_prompt: Системный промпт (опционально)
-            stream: Использовать потоковую генерацию
-            **kwargs: Дополнительные параметры для LLM
-            
-        Returns:
-            - При stream=False: LLMResponse с контентом и информацией о вызовах инструментов
-            - При stream=True: AsyncGenerator[StreamChunk, None] для потоковой генерации
-        """
-        # Создаем объект сообщения
-        io_message = IOMessage(content=message)
-        
-        # Выполняем input_hooks
-        for plugin in self.plugin_manager.get_all_plugins():
-            if hasattr(plugin, 'input_hook'):
-                if await plugin.input_hook(io_message):
-                    break
+        """Обрабатывает входящее сообщение"""
+        # Создаем или используем существующий IOMessage
+        if isinstance(message, str):
+            io_message = IOMessage(content=message)
+            if "user_id" in kwargs:
+                io_message.metadata["user_id"] = kwargs.pop("user_id")
+        else:
+            io_message = message
         
         # Создаем базовый список сообщений
         messages = []
@@ -181,7 +170,7 @@ class BaseAgent:
         context = {}
         for plugin in self.plugin_manager.get_all_plugins():
             if hasattr(plugin, 'rag_hook'):
-                plugin_context = await plugin.rag_hook(message)
+                plugin_context = await plugin.rag_hook(io_message)
                 if plugin_context:
                     context.update(plugin_context)
         
@@ -197,9 +186,22 @@ class BaseAgent:
         # Добавляем сообщение пользователя
         messages.append({
             "role": "user",
-            "content": message
+            "content": io_message.content
         })
         
+        # Создаем входящее сообщение для хуков
+        input_message = IOMessage(
+            type="text",
+            content=io_message.content,
+            metadata=io_message.metadata
+        )
+        
+        # Выполняем input_hooks (включая сохранение в память)
+        for plugin in self.plugin_manager.get_all_plugins():
+            if hasattr(plugin, 'input_hook'):
+                if await plugin.input_hook(input_message):
+                    break
+
         try:
             # Получаем ответ от LLM
             response = await self.llm.generate_response(
@@ -208,48 +210,22 @@ class BaseAgent:
                 stream=stream,
                 **kwargs
             )
+
+            print("=== response ===")
+            print(response)
             
             if stream:
                 # При стриминге возвращаем генератор
                 async def stream_with_hooks():
                     current_content = ""
                     async for chunk in response:
-                        # Обновляем текущий контент
                         if chunk.delta:
                             current_content += chunk.delta
                         yield chunk
 
-                # Создаем генератор
-                stream_generator = stream_with_hooks()
-                
-                # Создаем объект сообщения для стрима
-                stream_message = IOMessage(
-                    type="stream",
-                    content="",  # Начальный контент пустой
-                    stream=stream_generator  # Передаем генератор
-                )
-                
-                # Выполняем output_hooks
-                for plugin in self.plugin_manager.get_all_plugins():
-                    if hasattr(plugin, 'output_hook'):
-                        await plugin.output_hook(stream_message)
-                
-                # Возвращаем тот же генератор - он еще не использован,
-                # так как консольный плагин только сохранил его для последующего использования
-                return stream_generator
+                return stream_with_hooks()
             else:
-                # Создаем объект ответного сообщения
-                response_message = IOMessage(
-                    type="text",
-                    content=response  # Передаем весь LLMResponse
-                )
-                
-                # Выполняем output_hooks
-                for plugin in self.plugin_manager.get_all_plugins():
-                    if hasattr(plugin, 'output_hook'):
-                        await plugin.output_hook(response_message)
-                
-                return response  # Возвращаем весь LLMResponse
+                return response
                 
         except Exception as e:
             logger.exception("Error processing message")
@@ -258,24 +234,38 @@ class BaseAgent:
     async def handle_message(
         self,
         message: IOMessage,
-        system_prompt: str = None,
-        stream: bool = False
+        system_prompt: Optional[str] = None,
+        stream: bool = False,
+        **kwargs
     ) -> Optional[str]:
         """Обработка входящего сообщения"""
-        logger.debug("BaseAgent.handle_message called")
+        # Проверяем входящие хуки
+        for plugin in self.plugin_manager.get_all_plugins():
+            if hasattr(plugin, "input_hook"):
+                should_skip = await plugin.input_hook(message)
+                if should_skip:
+                    return
         
-        try:
-            # Обрабатываем через плагины
-            logger.debug("Processing input through plugins")
-            await self.plugin_manager.process_input(message)
+        # Обрабатываем сообщение, передаем весь IOMessage
+        response = await self.process_message(
+            message,  # Передаем весь объект, а не только content
+            system_prompt=system_prompt,
+            stream=stream,
+            **kwargs
+        )
+        
+        # Создаем IOMessage для ответа
+        response_message = IOMessage(
+            type="stream" if stream else "text",
+            content=response.content if hasattr(response, 'content') else response,
+            tool_calls=response.tool_calls if hasattr(response, 'tool_calls') else None,
+            tool_messages=response.tool_messages if hasattr(response, 'tool_messages') else None,
+            metadata=message.metadata  # Сохраняем все метаданные из входящего сообщения
+        )
+        
+        # Проверяем исходящие хуки
+        for plugin in self.plugin_manager.get_all_plugins():
+            if hasattr(plugin, "output_hook"):
+                await plugin.output_hook(response_message)
             
-            # Генерируем ответ через LLM
-            logger.debug("Generating response through LLM")
-            response = await self.process_message(message.content, system_prompt, stream)
-            
-            logger.debug("Message processing completed")
-            return response
-            
-        except Exception as e:
-            logger.error(f"Error in handle_message: {e}", exc_info=True)
-            raise 
+        return response 

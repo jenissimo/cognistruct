@@ -279,7 +279,6 @@ class ConsolePlugin(BasePlugin):
 
     async def output_hook(self, message: IOMessage):
         """Выводит сообщения в консоль"""
-        
         if message.type == "stream" and message.stream:
             # Обрабатываем стриминг напрямую
             await self.handle_stream(message.content, message.stream)
@@ -294,8 +293,8 @@ class ConsolePlugin(BasePlugin):
             content = self.format_output(content)
             
             # Если есть tool_calls в LLMResponse, выводим их перед основным контентом
-            if hasattr(message.content, 'tool_calls') and message.content.tool_calls:
-                for tool_call in message.content.tool_calls:
+            if hasattr(message, 'tool_calls') and message.tool_calls:
+                for tool_call in message.tool_calls:
                     self.print_tool_call(tool_call)
                     # Результат инструмента уже включен в основной контент
             

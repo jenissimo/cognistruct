@@ -15,25 +15,27 @@ from .bot import TelegramBot
 from .database import TelegramDatabase
 from .handlers import TelegramHandlers
 from .utils import format_message, send_content_box
+from .types import TelegramPluginProtocol
 
 # Настраиваем логирование
 logging.getLogger("httpx").setLevel(logging.WARNING)
 telegramify_logger = logging.getLogger("telegramify_markdown")
 telegramify_logger.setLevel(logging.INFO)
-telegramify_logger.warn = telegramify_logger.warning  # Добавляем алиас для warn
+telegramify_logger.warn = telegramify_logger.warning  # добавляем алиас для warn
 
 logger = logging.getLogger(__name__)
 
 class TelegramPlugin(BasePlugin):
     """Telegram плагин для CogniStruct"""
     
-    def __init__(self, telegram_user_id: str = None):
+    def __init__(self):
         super().__init__()
-        self.bot = None
         self.db = None
+        self.bot = None
         self.handlers = None
-        self._current_chat_id = None  # Текущий чат для обработки
-        self.telegram_user_id = telegram_user_id  # ID пользователя для привязки
+        self._current_chat_id = None
+        self.telegram_user_id = None
+        self._chat_linked_callbacks = []  # список коллбэков для обработки привязки
         
     def get_metadata(self) -> PluginMetadata:
         return PluginMetadata(
@@ -76,12 +78,14 @@ class TelegramPlugin(BasePlugin):
         await self.db.connect()
         
         self.bot = TelegramBot(self.token)
-        self.handlers = TelegramHandlers(self.db, self.bot)
+        self.handlers = TelegramHandlers(self.db, self.bot, self)
         
         # Регистрируем обработчики
         self.bot.add_handler(CommandHandler("start", self.handlers.handle_start))
         self.bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handlers.handle_message))
-        self.bot.add_handler(CallbackQueryHandler(self.handlers.handle_callback_query))
+        # Добавляем паттерн для обработки коллбэков: choice, confirm, reject, onboarding и других, если понадобится
+        self.bot.add_handler(CallbackQueryHandler(self.handlers.handle_callback_query, 
+                                                    pattern="^(choice|confirm|reject|onboarding)_"))
         
         # Инициализируем и запускаем бота
         await self.bot.start()
@@ -112,8 +116,10 @@ class TelegramPlugin(BasePlugin):
         
     async def cleanup(self):
         """Очистка ресурсов"""
-        await self.bot.stop()
-        await self.db.close()
+        if self.bot:
+            await self.bot.stop()
+        if self.db:
+            await self.db.close()
         
     async def input_hook(self, message: IOMessage) -> bool:
         """Проверяет привязку чата"""
@@ -134,85 +140,65 @@ class TelegramPlugin(BasePlugin):
             
         return False
         
-    async def output_hook(self, message: IOMessage) -> Optional[IOMessage]:
-        """Обработка исходящих сообщений"""        
-        # Используем сохраненный chat_id
-        if not self._current_chat_id:
-            logger.warning("No current chat_id")
+    async def output_hook(self, message: IOMessage):
+        """Обрабатывает исходящие сообщения"""
+        if "chat_id" not in message.metadata:
+            logger.warning("No chat_id in message metadata: %s", message.metadata)
             return message
-            
-        chat_id = self._current_chat_id
-        logger.debug(f"====== Output hook called with message: {message}")
+        
+        chat_id = message.metadata["chat_id"]
         
         try:
-            # Обрабатываем стриминг
-            if message.type == "stream":
-                current_content = ""
-                typing_interval = 4.0
-                last_typing = 0
+            # Обрабатываем интерактивное сообщение с кнопками
+            if message.type == "interactive_message":
+                options = message.metadata.get("options", [])
+                callback_prefix = message.metadata.get("callback_prefix", "choice")
                 
-                async for chunk in message.stream:
-                    # Обновляем статус набора с интервалом
+                # Формируем клавиатуру из вариантов
+                keyboard = []
+                for i, option in enumerate(options):
+                    keyboard.append([{
+                        "text": option,
+                        "callback_data": f"{callback_prefix}_{i}"
+                    }])
+                    
+                await self.bot.send_message(
+                    chat_id=chat_id,
+                    text=message.content,
+                    reply_markup={"inline_keyboard": keyboard}
+                )
+                
+            # Обрабатываем стриминг
+            elif message.type == "stream":
+                current_content = ""
+                last_typing = 0
+                typing_interval = 3.0  # Интервал обновления статуса набора
+                
+                async for chunk in message.content:
                     current_time = time.time()
                     if current_time - last_typing >= typing_interval:
-                        await self.send_typing(chat_id)
+                        await self.bot.send_chat_action(
+                            chat_id=chat_id,
+                            action="typing"
+                        )
                         last_typing = current_time
                         
-                    if chunk.tool_call:
-                        current_content += "🔧 Использую инструмент: " + chunk.tool_call.tool + "\n"
-
-                    if chunk.delta:
-                        current_content += chunk.delta
+                    current_content += chunk.delta
                 
-                # Отправляем финальное сообщение
                 boxes = await format_message(current_content)
                 for item in boxes:
                     await send_content_box(self.bot, chat_id, item)
                     
-            # Обрабатываем обычный текст
+            # Обрабатываем обычное текстовое сообщение
             elif message.type == "text":
-                # Извлекаем текст из LLMResponse
-                content = message.content.content if hasattr(message.content, 'content') else str(message.content)
+                content = str(message.content)
                 boxes = await format_message(content)
                 for item in boxes:
                     await send_content_box(self.bot, chat_id, item)
                     
-            # Обрабатываем действия (typing, etc)
-            elif message.type == "action":
-                await self.bot.send_chat_action(
-                    chat_id=chat_id,
-                    action=message.content
-                )
-                
-            # Обрабатываем запросы на подтверждение
-            elif message.type == "confirmation_request":
-                expires_in = message.metadata.get("expires_in", 3600)
-                
-                # Создаем запрос на подтверждение
-                confirmation_id = await self.db.create_confirmation(
-                    message=message.content,
-                    chat_id=chat_id,
-                    callback_data=message.metadata.get("callback_data", ""),
-                    expires_in=expires_in
-                )
-                
-                keyboard = [
-                    [
-                        {"text": "✅ Подтвердить", "callback_data": f"confirm_{confirmation_id}"},
-                        {"text": "❌ Отклонить", "callback_data": f"reject_{confirmation_id}"}
-                    ]
-                ]
-                
-                await self.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"Требуется подтверждение:\n\n{message.content}",
-                    reply_markup={"inline_keyboard": keyboard}
-                )
-                    
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
-            # В случае ошибки пробуем отправить без форматирования
-            content = message.content.content if hasattr(message.content, 'content') else str(message.content)
+            content = str(message.content)
             await self.bot.send_message(
                 chat_id=chat_id,
                 text=content
@@ -348,3 +334,22 @@ class TelegramPlugin(BasePlugin):
                 metadata={"chat_id": chat_id}
             )
         ) 
+        
+    async def setup_minimal(self, token: str):
+        """Минимальная инициализация без поллинга"""
+        self.token = token
+        self.db = TelegramDatabase()
+        await self.db.connect()
+        # self.bot = TelegramBot(token)
+        
+    async def add_chat_linked_callback(self, callback):
+        """Добавляет коллбэк для обработки успешной привязки чата"""
+        self._chat_linked_callbacks.append(callback)
+        
+    async def _notify_chat_linked(self, chat_id: str, user_id: str):
+        """Уведомляет все коллбэки о привязке чата"""
+        for callback in self._chat_linked_callbacks:
+            try:
+                await callback(chat_id, user_id)
+            except Exception as e:
+                logger.error(f"Error in chat linked callback: {e}")
