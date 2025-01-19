@@ -1,5 +1,5 @@
 import logging
-from telegram import Bot, Update
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -8,6 +8,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,43 @@ class TelegramBot:
     async def send_message(self, chat_id: str, text: str, **kwargs):
         """Отправляет сообщение"""
         await self.app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        
+    async def send_message_with_buttons(self, chat_id: str, text: str, buttons: List[Dict[str, str]], **kwargs):
+        """
+        Отправка сообщения с кнопками
+        
+        Args:
+            chat_id: ID чата
+            text: Текст сообщения
+            buttons: Список кнопок в формате [{"text": "Текст кнопки", "callback_data": "data"}]
+            **kwargs: Дополнительные параметры для отправки сообщения
+        """
+        keyboard = []
+        row = []
+        
+        for button in buttons:
+            row.append(InlineKeyboardButton(
+                text=button["text"],
+                callback_data=button["callback_data"]
+            ))
+            
+            # Создаем новый ряд каждые 2 кнопки
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+                
+        # Добавляем оставшиеся кнопки
+        if row:
+            keyboard.append(row)
+            
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await self.app.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=reply_markup,
+            **kwargs
+        )
         
     async def send_chat_action(self, chat_id: str, action: str):
         """Отправляет действие (печатает, отправляет фото и т.д.)"""

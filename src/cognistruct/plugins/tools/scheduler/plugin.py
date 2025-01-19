@@ -4,13 +4,14 @@ from datetime import datetime, timedelta
 import json
 import zoneinfo
 import uuid
+import logging
 
 from cognistruct.core import BasePlugin, IOMessage, PluginMetadata
 from cognistruct.llm.interfaces import ToolSchema, ToolParameter
 from .database import SchedulerDatabase
 from cognistruct.utils.logging import setup_logger
 
-logger = setup_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class SchedulerPlugin(BasePlugin):
@@ -31,6 +32,39 @@ class SchedulerPlugin(BasePlugin):
             priority=100
         )
         
+    def get_tools(self) -> List[ToolSchema]:
+        """Возвращает инструменты для работы с планировщиком"""
+        return [
+            ToolSchema(
+                name="schedule_task",
+                description="Планировщик твоих задач. Планирует отложенную задачу (например напомнить пользователю о чем-то) в указанное время или с заданной периодичностью. Если тебе не хватает контекста о дате/времени выполнения задачи, то уточни его у пользователя.",
+                parameters=[
+                    ToolParameter(
+                        name="task_prompt",
+                        type="string",
+                        description="Промпт для LLM, описывающий что нужно сделать в указанное время, например \"Напомнить купить молоко\" или \"Написать мотивирующее сообщение\"."
+                    ),
+                    ToolParameter(
+                        name="scheduled_for",
+                        type="string",
+                        description="Дата и время выполнения в формате 'DD.MM.YYYY HH:mm:ss'. Например: '25.12.2024 15:30:00'."
+                    ),
+                    ToolParameter(
+                        name="recurrence",
+                        type="string",
+                        enum=["none", "daily", "weekly", "monthly", "yearly"],
+                        description="Частота повторения. Возможные значения: 'none', 'daily', 'weekly', 'monthly', 'yearly'. По умолчанию: 'none'",
+                        required=False
+                    )
+                ]
+            ),
+            #ToolSchema(
+            #    name="list_tasks",
+            #    description="Показывает список запланированных задач",
+            #    parameters=[]
+            #)
+        ]
+        
     async def setup(self):
         await self.db.connect()
         self._running = True
@@ -48,54 +82,59 @@ class SchedulerPlugin(BasePlugin):
         """Включает ранее отключенный инструмент"""
         self._disabled_tools.discard(tool_name)
         
-    async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> str:
-        # Проверяем, не отключен ли инструмент
+    async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        print(f"Executing tool {tool_name} with params: {params}")
+        
         if tool_name in self._disabled_tools:
-            return f"Инструмент {tool_name} временно недоступен"
-            
+            return {"content": f"Инструмент {tool_name} временно недоступен"}
+        
         if tool_name == "schedule_task":
-            user_id = params.pop("user_id", None)
-            if not user_id:
-                return "Ошибка: не указан user_id"
-                
             task_id = str(uuid.uuid4())
-            name = params["name"]
             task_prompt = params["task_prompt"]
+            scheduled_for = datetime.strptime(params["scheduled_for"], "%d.%m.%Y %H:%M:%S")
+            recurrence = params.get("recurrence", "none")
             
-            # Рассчитываем время следующего запуска
-            next_run = datetime.now()
-            if "delay" in params:
-                next_run += timedelta(seconds=params["delay"])
-                
+            # Рассчитываем интервал повторения
+            interval = None
+            if recurrence == "daily":
+                interval = 24 * 60 * 60  # каждые 24 часа
+            elif recurrence == "weekly":
+                interval = 7 * 24 * 60 * 60  # каждые 7 дней
+            elif recurrence == "monthly":
+                interval = 30 * 24 * 60 * 60  # примерно месяц
+            elif recurrence == "yearly":
+                interval = 365 * 24 * 60 * 60  # примерно год
+            
             # Добавляем задачу в БД
             await self.db.add_task(
                 task_id=task_id,
-                user_id=user_id,
-                name=name,
+                user_id=None,  # будет браться из контекста
+                name="llm_task",
                 task_prompt=task_prompt,
-                next_run=next_run,
-                interval=params.get("interval"),
-                system_prompt=params.get("system_prompt"),
-                notify_on_complete=params.get("notify_on_complete", True)
+                next_run=scheduled_for,
+                interval=interval,
+                notify_on_complete=True
             )
             
-            return f"Задача '{name}' запланирована на {next_run.strftime('%d.%m.%Y %H:%M')}"
+            recurrence_text = f" (повторяется {recurrence})" if recurrence != "none" else ""
+            return {
+                "content": f"Задача запланирована на {scheduled_for.strftime('%d.%m.%Y %H:%M')}{recurrence_text}"
+            }
             
         elif tool_name == "list_tasks":
-            user_id = params.pop("user_id", None)
-            if not user_id:
-                return "Ошибка: не указан user_id"
-                
-            tasks = await self.db.get_user_tasks(user_id)
+            tasks = await self.db.get_user_tasks(None)  # user_id будет браться из контекста
             if not tasks:
-                return "У вас нет запланированных задач"
+                return {"content": "У вас нет запланированных задач"}
                 
             result = "Ваши задачи:\n"
             for task in tasks:
                 next_run = datetime.fromisoformat(task["next_run"])
-                result += f"- {task['name']}: {next_run.strftime('%d.%m.%Y %H:%M')}\n"
-            return result.strip()
+                interval_text = " (повторяющаяся)" if task["interval"] else ""
+                result += f"- {task['task_prompt']}: {next_run.strftime('%d.%m.%Y %H:%M')}{interval_text}\n"
+            return {"content": result.strip()}
             
+        return {"content": f"Неизвестный инструмент: {tool_name}"}
+        
     async def _tick(self):
         """Проверяет и выполняет задачи"""
         while self._running:
@@ -115,22 +154,37 @@ class SchedulerPlugin(BasePlugin):
                     await self.disable_tool("list_tasks")
                     
                     try:
+                        # Создаем сообщение с промптом для LLM
                         message = IOMessage(
                             type="text",
                             content=task["task_prompt"],
                             metadata={
                                 "user_id": task["user_id"],
                                 "scheduled": True,
-                                "task_id": task["id"],
-                                "task_name": task["name"]
+                                "task_id": task["id"]
                             }
                         )
                         
-                        await self.agent.handle_message(
+                        # Обрабатываем промпт через LLM
+                        response = await self.agent.handle_message(
                             message,
-                            system_prompt=task["system_prompt"],
                             stream=False
                         )
+                        
+                        # Отправляем ответ пользователю
+                        if response and response.content:
+                            await self.agent.handle_message(
+                                IOMessage(
+                                    type="text",
+                                    content=response.content,
+                                    metadata={
+                                        "user_id": task["user_id"],
+                                        "scheduled": True,
+                                        "task_id": task["id"]
+                                    }
+                                ),
+                                stream=False
+                            )
                         
                     finally:
                         # Включаем инструменты обратно

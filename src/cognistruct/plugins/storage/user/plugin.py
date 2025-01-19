@@ -39,8 +39,7 @@ class UserStoragePlugin(BasePlugin):
         return PluginMetadata(
             name="user_storage",
             description="Хранение информации о пользователях",
-            version="1.0.0",
-            author="CogniStruct"
+            version="1.0.0"
         )
 
     async def setup(self):

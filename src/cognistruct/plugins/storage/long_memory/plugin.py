@@ -52,8 +52,8 @@ class LongTermMemoryPlugin(BasePlugin):
                     ),
                     ToolParameter(
                         name="tags",
-                        type="array",
-                        description="Список тегов для поиска"
+                        type="string",
+                        description="Список тегов через запятую, например: 'имя, предпочтения, язык'"
                     )
                 ]
             ),
@@ -181,10 +181,14 @@ class LongTermMemoryPlugin(BasePlugin):
     async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> str:
         """Выполняет инструмент"""
         if tool_name == "remember":
+            print("Remember tool called")
+            print(params)
+            # Преобразуем строку тегов в список
+            tags = [tag.strip() for tag in params["tags"].split(",") if tag.strip()]
             await self.add_memory(
                 params["fact"], 
-                params["tags"],
-                params.get("user_id")  # Добавляем поддержку user_id
+                tags,
+                params.get("user_id")
             )
             return f"Запомнил: {params['fact']}"
             

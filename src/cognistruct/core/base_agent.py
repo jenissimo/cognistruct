@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, List, AsyncGenerator, Union
+from typing import Dict, Any, Optional, List, AsyncGenerator, Union, Callable, Awaitable
 import asyncio
 import json
 import logging
@@ -158,6 +158,7 @@ class BaseAgent:
         message: Union[str, IOMessage],
         system_prompt: Optional[str] = None,
         stream: bool = False,
+        message_preprocessor: Optional[Callable[[IOMessage], Awaitable[IOMessage]]] = None,
         **kwargs
     ) -> Union[str, AsyncGenerator[IOMessage, None]]:
         """
@@ -167,12 +168,14 @@ class BaseAgent:
             message: Сообщение для обработки (строка или IOMessage)
             system_prompt: Системный промпт (опционально)
             stream: Использовать стриминг
+            message_preprocessor: Функция для предварительной обработки ответа от LLM
             **kwargs: Дополнительные параметры для LLM
             
         Returns:
             Union[str, AsyncGenerator[IOMessage, None]]: Ответ от LLM
         """
-        logger.debug("process_message called with stream=%s", stream)
+        logger.debug("process_message called with stream=%s, preprocessor=%s", 
+                    stream, message_preprocessor.__name__ if message_preprocessor else None)
         
         # Получаем текст сообщения и метаданные
         message_text = message.content if isinstance(message, IOMessage) else message
@@ -208,10 +211,20 @@ class BaseAgent:
                     
             return stream_generator()
         else:
-            # Для обычного ответа пропускаем через output_hooks
+            # Для обычного ответа сначала применяем препроцессор, если есть
             response_message = response  # response уже является IOMessage
             response_message.metadata.update(metadata)
             
+            if message_preprocessor:
+                logger.debug("Applying message preprocessor")
+                try:
+                    response_message = await message_preprocessor(response_message)
+                    logger.debug("Message preprocessor applied successfully")
+                except Exception as e:
+                    logger.error(f"Error in message preprocessor: {e}", exc_info=True)
+            
+            # Затем пропускаем через output_hooks
+            logger.debug("Processing through output_hooks")
             for plugin in self.plugin_manager.get_all_plugins():
                 if hasattr(plugin, 'output_hook'):
                     processed = await plugin.output_hook(response_message)

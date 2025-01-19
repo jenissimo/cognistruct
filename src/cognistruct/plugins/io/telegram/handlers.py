@@ -16,9 +16,10 @@ logger = logging.getLogger(__name__)
 class TelegramHandlers:
     """Обработчики команд и сообщений Telegram"""
     
-    def __init__(self, db: TelegramDatabase, bot: 'TelegramBot'):
+    def __init__(self, db: TelegramDatabase, bot: TelegramBot, plugin: 'TelegramPlugin'):
         self.db = db
         self.bot = bot
+        self.plugin = plugin
         self.message_handler: Optional[Callable[[IOMessage], Awaitable[None]]] = None
         
     async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -54,9 +55,22 @@ class TelegramHandlers:
             # Привязываем чат
             await self.db.link_chat(str(chat_id), user_id)
             
-            await update.message.reply_text(
-                "Чат успешно привязан! Теперь вы можете общаться со мной."
-            )
+            # Получаем информацию о пользователе
+            telegram_user = update.effective_user
+            user_info = {
+                "telegram_username": telegram_user.username,
+                "telegram_first_name": telegram_user.first_name,
+                "telegram_last_name": telegram_user.last_name,
+                "telegram_language_code": telegram_user.language_code
+            }
+            logger.debug(f"Got Telegram user info: {user_info}")
+            
+            # Уведомляем о привязке чата с информацией о пользователе
+            await self.plugin._notify_chat_linked(str(chat_id), user_id, user_info)
+            
+            #await update.message.reply_text(
+            #    "Чат успешно привязан! Теперь вы можете общаться со мной."
+            #)
             
         except Exception as e:
             logger.error(f"Error linking chat: {e}")
@@ -72,21 +86,75 @@ class TelegramHandlers:
         if data.startswith("confirm_"):
             confirmation_id = data.replace("confirm_", "")
             status = "confirmed"
+            
+            # Обновляем статус подтверждения
+            await self.db.update_confirmation_status(confirmation_id, status)
+            
+            await query.answer("Спасибо за ответ!")
+            await query.edit_message_text(
+                f"Действие {status}",
+                reply_markup=None
+            )
         elif data.startswith("reject_"):
             confirmation_id = data.replace("reject_", "")
             status = "rejected"
-        else:
-            await query.answer("Неизвестное действие")
-            return
             
-        # Обновляем статус подтверждения
-        await self.db.update_confirmation_status(confirmation_id, status)
-        
-        await query.answer("Спасибо за ответ!")
-        await query.edit_message_text(
-            f"Действие {status}",
-            reply_markup=None
-        )
+            # Обновляем статус подтверждения
+            await self.db.update_confirmation_status(confirmation_id, status)
+            
+            await query.answer("Спасибо за ответ!")
+            await query.edit_message_text(
+                f"Действие {status}",
+                reply_markup=None
+            )
+        else:
+            # Для всех остальных кнопок создаем обычное сообщение
+            chat_id = str(update.effective_chat.id)
+            chat_link = await self.db.get_chat_link(chat_id)
+            if not chat_link:
+                await query.answer("Чат не привязан")
+                return
+                
+            # Получаем текст нажатой кнопки
+            selected_option = None
+            for row in query.message.reply_markup.inline_keyboard:
+                for button in row:
+                    if button.callback_data == data:
+                        selected_option = button.text
+                        break
+                if selected_option:
+                    break
+                    
+            if not selected_option:
+                await query.answer("Ошибка: кнопка не найдена")
+                return
+                
+            message = IOMessage(
+                type="telegram_message",
+                content=selected_option,
+                metadata={
+                    "chat_id": chat_id,
+                    "user_id": chat_link["user_id"],
+                    "update": update,
+                    "context": context,
+                    "callback_data": data  # Передаем оригинальный callback_data для контекста
+                }
+            )
+            
+            # Передаем сообщение в обработчик
+            if self.message_handler:
+                await query.answer("Принято!")
+                await query.edit_message_reply_markup(reply_markup=None)
+                try:
+                    # Показываем индикатор набора
+                    await self.bot.send_chat_action(chat_id=chat_id, action="typing")
+                    await self.message_handler(message)
+                except Exception as e:
+                    logger.error(f"Error processing button response: {e}")
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text="Произошла ошибка при обработке ответа. Попробуйте позже."
+                    )
             
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка входящих сообщений из Telegram"""
