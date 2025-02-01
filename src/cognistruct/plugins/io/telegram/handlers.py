@@ -7,6 +7,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from cognistruct.core import IOMessage
+from cognistruct.core.context import RequestContext
 from .database import TelegramDatabase
 from .bot import TelegramBot
 from .utils import format_message, send_content_box
@@ -80,12 +81,15 @@ class TelegramHandlers:
             
     async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка callback query (кнопок)"""
+        logger.info("🔘 Получено нажатие кнопки в Telegram")
         query = update.callback_query
         data = query.data
+        logger.debug(f"Callback data: {data}")
         
         if data.startswith("confirm_"):
             confirmation_id = data.replace("confirm_", "")
             status = "confirmed"
+            logger.debug(f"Processing confirmation {confirmation_id} with status {status}")
             
             # Обновляем статус подтверждения
             await self.db.update_confirmation_status(confirmation_id, status)
@@ -95,9 +99,12 @@ class TelegramHandlers:
                 f"Действие {status}",
                 reply_markup=None
             )
+            logger.info("✅ Подтверждение обработано")
+            
         elif data.startswith("reject_"):
             confirmation_id = data.replace("reject_", "")
             status = "rejected"
+            logger.debug(f"Processing rejection {confirmation_id} with status {status}")
             
             # Обновляем статус подтверждения
             await self.db.update_confirmation_status(confirmation_id, status)
@@ -107,14 +114,20 @@ class TelegramHandlers:
                 f"Действие {status}",
                 reply_markup=None
             )
+            logger.info("❌ Отклонение обработано")
+            
         else:
             # Для всех остальных кнопок создаем обычное сообщение
+            logger.info("🔄 Обработка пользовательской кнопки")
             chat_id = str(update.effective_chat.id)
             chat_link = await self.db.get_chat_link(chat_id)
             if not chat_link:
+                logger.warning(f"Chat {chat_id} not linked to any user")
                 await query.answer("Чат не привязан")
                 return
                 
+            logger.debug(f"Found chat link: {chat_link}")
+            
             # Получаем текст нажатой кнопки
             selected_option = None
             for row in query.message.reply_markup.inline_keyboard:
@@ -126,20 +139,51 @@ class TelegramHandlers:
                     break
                     
             if not selected_option:
+                logger.warning("Button not found in keyboard markup")
                 await query.answer("Ошибка: кнопка не найдена")
                 return
                 
+            logger.debug(f"Selected option: {selected_option}")
+            
+            # Получаем информацию о пользователе
+            telegram_user = update.effective_user
+            user_info = {
+                "telegram_username": telegram_user.username,
+                "telegram_first_name": telegram_user.first_name,
+                "telegram_last_name": telegram_user.last_name,
+                "telegram_language_code": telegram_user.language_code
+            }
+            
+            # Создаем контекст запроса с очищенными метаданными
+            request_context = RequestContext(
+                user_id=chat_link["user_id"],  # Используем user_id из базы
+                metadata={
+                    "chat_id": chat_id,
+                    "platform": "telegram",
+                    "user_info": user_info,  # Добавляем информацию о пользователе
+                    "message_id": query.message.message_id,
+                    "message_date": query.message.date.timestamp(),
+                    "callback_data": data,
+                    "selected_option": selected_option
+                },
+                timestamp=datetime.now().timestamp()
+            )
+            logger.debug(f"Created request context: {request_context}")
+                
             message = IOMessage(
-                type="telegram_message",
+                type="text",
                 content=selected_option,
                 metadata={
                     "chat_id": chat_id,
                     "user_id": chat_link["user_id"],
-                    "update": update,
-                    "context": context,
-                    "callback_data": data  # Передаем оригинальный callback_data для контекста
-                }
+                    "user_info": user_info,  # Добавляем информацию о пользователе
+                    "callback_data": data,
+                    "selected_option": selected_option
+                },
+                source="telegram",
+                context=request_context
             )
+            logger.debug(f"Created IO message: {message}")
             
             # Передаем сообщение в обработчик
             if self.message_handler:
@@ -148,59 +192,131 @@ class TelegramHandlers:
                 try:
                     # Показываем индикатор набора
                     await self.bot.send_chat_action(chat_id=chat_id, action="typing")
-                    await self.message_handler(message)
+                    logger.info("🔄 Передаю сообщение обработчику...")
+                    
+                    # Получаем ответ от обработчика
+                    response = await self.message_handler(message)
+                    
+                    # Если ответ - строка или IOMessage, передаем контекст
+                    if isinstance(response, str):
+                        response = IOMessage(
+                            type="text",
+                            content=response,
+                            source="agent",
+                            context=request_context  # Передаем тот же контекст
+                        )
+                    elif isinstance(response, IOMessage) and not response.context:
+                        response.context = request_context  # Добавляем контекст если его нет
+                    
+                    logger.info("✅ Сообщение успешно обработано")
+                    
                 except Exception as e:
-                    logger.error(f"Error processing button response: {e}")
+                    logger.error(f"❌ Ошибка при обработке ответа: {e}", exc_info=True)
                     await self.bot.send_message(
                         chat_id=chat_id,
                         text="Произошла ошибка при обработке ответа. Попробуйте позже."
                     )
             
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка входящих сообщений из Telegram"""
-        logger.debug("Received message in handle_message")
+        """Обработка входящих сообщений"""
+        logger.info("🔵 Получено новое сообщение в Telegram")
+        chat_id = update.effective_chat.id
+        logger.debug(f"Chat ID: {chat_id}, Message: {update.message.text[:50]}...")
         
-        if not update.message or not update.message.text:
-            logger.warning("No message or text in update")
+        # Проверяем привязку чата
+        chat_link = await self.db.get_chat_link(str(chat_id))
+        if not chat_link:
+            logger.warning(f"Chat {chat_id} not linked to any user")
+            await update.message.reply_text(
+                "Этот чат не привязан к пользователю. Используйте /start для привязки."
+            )
             return
             
-        chat_id = update.effective_chat.id
-        text = update.message.text
+        logger.debug(f"Found chat link: {chat_link}")
         
-        logger.debug(f"Processing message: {text[:50]}...")
+        # Получаем информацию о пользователе
+        telegram_user = update.effective_user
+        user_info = {
+            "telegram_username": telegram_user.username,
+            "telegram_first_name": telegram_user.first_name,
+            "telegram_last_name": telegram_user.last_name,
+            "telegram_language_code": telegram_user.language_code
+        }
         
-        # Создаем IOMessage из телеграм сообщения
-        message = IOMessage(
-            type="telegram_message",
-            content=text,
+        # Создаем контекст запроса с очищенными метаданными
+        request_context = RequestContext(
+            user_id=chat_link["user_id"],  # Используем user_id из базы
             metadata={
                 "chat_id": str(chat_id),
-                "update": update,
-                "context": context
-            }
+                "platform": "telegram",
+                "user_info": user_info,  # Добавляем информацию о пользователе
+                "message_id": update.message.message_id,
+                "message_date": update.message.date.timestamp()
+            },
+            timestamp=datetime.now().timestamp()
         )
+        logger.debug(f"Created request context: {request_context}")
         
-        # Показываем начальный индикатор набора
-        await self.bot.send_chat_action(chat_id=chat_id, action="typing")
+        # Создаем сообщение
+        message = IOMessage(
+            type="text",
+            content=update.message.text,
+            metadata={
+                "chat_id": str(chat_id),
+                "user_id": chat_link["user_id"],
+                "user_info": user_info  # Добавляем информацию о пользователе
+            },
+            source="telegram",
+            context=request_context
+        )
+        logger.debug(f"Created IO message: {message}")
         
-        # Передаем сообщение в обработчик
+        # Передаем сообщение обработчику
         if self.message_handler:
             try:
-                logger.debug("Passing message to handler")
+                # Показываем индикатор набора
+                await self.bot.send_chat_action(chat_id=chat_id, action="typing")
+                logger.info("🔄 Передаю сообщение обработчику...")
+                
+                # Получаем ответ от обработчика
                 response = await self.message_handler(message)
                 
-                # Если ответ - генератор, итерируемся по нему
+                # Если ответ - генератор (стрим)
                 if hasattr(response, '__aiter__'):
-                    logger.debug("Got streaming response, starting iteration")
-                    async for chunk in response:
-                        # Просто проходим по чанкам, их обработка уже в streaming_output_hook
+                    logger.debug("Получен стрим-ответ")
+                    # Создаем IOMessage со стримом
+                    stream_message = IOMessage.create_stream(
+                        response,
+                        source="agent",
+                        context=request_context
+                    )
+                    # Пропускаем через streaming_output_hook плагина
+                    async for chunk in self.plugin.streaming_output_hook(stream_message):
+                        # Чанки уже обработаны в streaming_output_hook
                         pass
                         
-                logger.debug("Message processing completed")
+                # Если ответ - строка или IOMessage
+                else:
+                    logger.debug("Получен обычный ответ")
+                    if isinstance(response, str):
+                        response = IOMessage(
+                            type="text",
+                            content=response,
+                            source="agent",
+                            context=request_context
+                        )
+                    elif isinstance(response, IOMessage) and not response.context:
+                        response.context = request_context
+                        
+                    # Передаем ответ в output_hook плагина
+                    await self.plugin.output_hook(response)
+                    
+                logger.info("✅ Сообщение успешно обработано")
+                
             except Exception as e:
-                logger.error(f"Error processing message: {e}", exc_info=True)
+                logger.error(f"❌ Ошибка при обработке сообщения: {e}", exc_info=True)
                 await update.message.reply_text(
                     "Произошла ошибка при обработке сообщения. Попробуйте позже."
                 )
         else:
-            logger.warning("Message handler not set") 
+            logger.warning("❗ Message handler not set") 

@@ -1,8 +1,8 @@
 from typing import Dict, Optional, Type
 
-from cognistruct.llm.interfaces import BaseLLM
-from cognistruct.llm.openai_service import OpenAIService, OpenAIProvider, OPENAI, DEEPSEEK, OLLAMA, PROXYAPI
-from cognistruct.utils.logging import setup_logger
+from .interfaces import BaseLLM
+from .openai_service import OpenAIService, OpenAIProvider, OPENAI, DEEPSEEK, OLLAMA, PROXYAPI
+from ..utils.logging import setup_logger
 
 logger = setup_logger(__name__)
 
@@ -11,27 +11,45 @@ class LLMRouter:
     """Роутер для работы с различными LLM провайдерами"""
     
     def __init__(self):
-        # Предопределенные провайдеры
-        self._providers = {
-            "openai": OPENAI,
-            "proxyapi": PROXYAPI,
-            "deepseek": DEEPSEEK,
-            "ollama": OLLAMA
+        # Предопределенные провайдеры с дефолтными настройками
+        self._default_settings = {
+            OPENAI: {
+                "model": "gpt-4o",
+                "base_url": "https://api.openai.com/v1"
+            },
+            PROXYAPI: {
+                "model": "gpt-4o",
+                "base_url": "https://api.proxyapi.ru/openai/v1"
+            },
+            DEEPSEEK: {
+                "model": "deepseek-chat",
+                "base_url": "https://api.deepseek.com/v1"
+            },
+            OLLAMA: {
+                "model": "llama2",  # Дефолтная модель
+                "base_url": "http://localhost:11434/v1"
+            }
         }
         self._instances: Dict[str, BaseLLM] = {}
-        logger.info("LLMRouter initialized with providers: %s", list(self._providers.keys()))
+        logger.info("LLMRouter initialized with providers: %s", list(self._default_settings.keys()))
 
-    def register_provider(self, name: str, provider: OpenAIProvider):
+    def register_provider(self, name: str, settings: Dict[str, str]):
         """Регистрирует нового провайдера"""
-        self._providers[name] = provider
+        self._default_settings[name] = settings
         logger.info("Registered new provider: %s", name)
 
     def get_instance(self, provider: str) -> Optional[BaseLLM]:
         """Возвращает экземпляр LLM по имени провайдера"""
         return self._instances.get(provider)
 
-    def create_instance(self, provider: str, api_key: str, model: Optional[str] = None, 
-                     temperature: Optional[float] = None, max_tokens: Optional[int] = None) -> BaseLLM:
+    def create_instance(
+        self, 
+        provider: str, 
+        api_key: str, 
+        model: Optional[str] = None, 
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
+    ) -> BaseLLM:
         """
         Создает новый экземпляр LLM
         
@@ -42,18 +60,20 @@ class LLMRouter:
             temperature: Температура генерации (0.0 - 1.0)
             max_tokens: Максимальное количество токенов в ответе
         """
-        if provider not in self._providers:
+        if provider not in self._default_settings:
             raise ValueError(f"Unknown provider: {provider}")
             
-        # Создаем копию конфигурации провайдера
-        provider_config = self._providers[provider]
+        # Получаем дефолтные настройки
+        settings = self._default_settings[provider]
+        
+        # Создаем конфигурацию провайдера
         config = OpenAIProvider(
-            name=provider_config.name,
-            model=model or provider_config.model,  # Используем указанную модель или дефолтную
-            api_base=provider_config.api_base,
             api_key=api_key,
-            temperature=temperature if temperature is not None else provider_config.temperature,
-            max_tokens=max_tokens if max_tokens is not None else provider_config.max_tokens
+            model=model or settings["model"],
+            base_url=settings["base_url"],
+            temperature=temperature or 0.7,
+            provider=provider,
+            max_tokens=max_tokens
         )
             
         # Создаем экземпляр сервиса

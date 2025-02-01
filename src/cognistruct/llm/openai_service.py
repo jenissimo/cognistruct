@@ -1,193 +1,143 @@
+"""OpenAI LLM сервис"""
+
 import json
-from typing import Any, Dict, List, Optional, Union, AsyncGenerator
-from dataclasses import dataclass
-import asyncio
-
+import logging
+from typing import Dict, Any, Optional, AsyncGenerator, List, TYPE_CHECKING, Union
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from openai.types.chat import ChatCompletionMessageParam
 
-from cognistruct.llm.interfaces import BaseLLM, LLMResponse, ToolSchema, ToolCall
-from cognistruct.utils.logging import setup_logger
-from cognistruct.utils.schema_converter import convert_tool_schema
-from cognistruct.core.messages import IOMessage
-from cognistruct.llm.tool_call_manager import ToolCallManager, ToolCallBuilder
+from .interfaces import BaseLLM, ToolSchema, LLMResponse
+from .tool_call_manager import ToolCallManager, ToolCallBuilder
+from ..core.messages import IOMessage
 
-logger = setup_logger(__name__)
+if TYPE_CHECKING:
+    from ..core.context import RequestContext
 
-@dataclass
+logger = logging.getLogger(__name__)
+
+# Константы для провайдеров
+OPENAI = "openai"
+DEEPSEEK = "deepseek"
+OLLAMA = "ollama"
+PROXYAPI = "proxyapi"
+
+
 class OpenAIProvider:
-    """Конфигурация провайдера OpenAI API"""
-    name: str
-    model: str
-    api_base: str
-    api_key: Optional[str] = None  # Может быть None для некоторых провайдеров
-    temperature: float = 0.7  # Добавляем температуру по умолчанию
-    max_tokens: Optional[int] = None  # Максимальное количество токенов
-    is_proxy: bool = False  # Флаг использования ProxyAPI
-
-
-# Предопределенные провайдеры
-OPENAI = OpenAIProvider(
-    name="openai",
-    model="gpt-4o",
-    api_base="https://api.openai.com/v1",
-    api_key="",  # Заполняется из конфига
-    temperature=0.7,
-    max_tokens=None,
-    is_proxy=False
-)
-
-PROXYAPI = OpenAIProvider(
-    name="proxyapi",
-    model="gpt-4o",
-    api_base="https://api.proxyapi.ru/openai/v1",
-    api_key="",  # Заполняется из конфига
-    temperature=0.7,
-    max_tokens=None,
-    is_proxy=True
-)
-
-DEEPSEEK = OpenAIProvider(
-    name="deepseek",
-    model="deepseek-chat",
-    api_base="https://api.deepseek.com/v1",
-    api_key="",  # Заполняется из конфига
-    temperature=0.7,
-    max_tokens=None,
-    is_proxy=False
-)
-
-OLLAMA = OpenAIProvider(
-    name="ollama",
-    model="",  # Заполняется пользователем
-    api_base="http://localhost:11434/v1",
-    api_key=None,  # Не требуется для локального Ollama
-    temperature=0.7,
-    max_tokens=None,
-    is_proxy=False
-)
+    """Конфигурация провайдера OpenAI-совместимого API"""
+    
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-4o",
+        base_url: Optional[str] = None,
+        temperature: float = 0.7,
+        provider: str = OPENAI,
+        max_tokens: Optional[int] = None
+    ):
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url
+        self.temperature = temperature
+        self.provider = provider
+        self.max_tokens = max_tokens
 
 
 class OpenAIService(BaseLLM):
-    """Реализация для работы с OpenAI-совместимыми API"""
+    """Сервис для работы с OpenAI API и совместимыми провайдерами"""
 
     def __init__(self, provider: OpenAIProvider):
         self.provider = provider
         self.max_iterations = 5  # Максимальное количество итераций
-        
+
         # Для Ollama не требуется API ключ
-        if provider.name == "ollama":
+        if provider.provider == OLLAMA:
             api_key = "ollama"
-            logger.info(f"Initialized provider '{provider.name}' without API key.")
+            logger.info(f"Initialized provider '{provider.provider}' without API key.")
         else:
             if not provider.api_key:
-                logger.error(f"API key must be provided for provider '{provider.name}'.")
-                raise ValueError(f"API key must be provided for provider '{provider.name}'")
-            
+                logger.error(f"API key must be provided for provider '{provider.provider}'.")
+                raise ValueError(f"API key must be provided for provider '{provider.provider}'")
             api_key = provider.api_key
-            logger.info(f"Initialized provider '{provider.name}' with provided API key.")
+            logger.info(f"Initialized provider '{provider.provider}' with provided API key.")
 
         self.client = AsyncOpenAI(
             api_key=api_key,
-            base_url=provider.api_base
+            base_url=provider.base_url
         )
 
     def set_tool_executor(self, executor):
         """Устанавливает функцию для выполнения инструментов"""
         self.tool_executor = executor
 
-    async def _generate_regular_response(
-        self,
-        request_params: Dict[str, Any]
-    ) -> IOMessage:
+    async def _generate_regular_response(self, request_params: Dict[str, Any]) -> IOMessage:
         """Генерирует обычный (не потоковый) ответ"""
-        messages = request_params.get("messages", []).copy()
-        final_content = ""
-        tool_results = []
-        
-        # Создаем локальный tool_manager для этого запроса
-        tool_manager = ToolCallManager()
-        if hasattr(self, 'tool_executor'):
-            tool_manager.set_tool_executor(self.tool_executor)
-        
-        for iteration in range(self.max_iterations):
-            try:
-                # Обновляем параметры запроса
-                current_request = request_params.copy()
-                current_request["messages"] = messages
-                current_request["temperature"] = self.provider.temperature
-                
-                response = await self.client.chat.completions.create(**current_request)
-                message = response.choices[0].message
-                message_dict = message.model_dump()
-                logger.debug(f"Received response from API: {message_dict}")
-                
-                # Проверяем наличие tool_calls
-                tool_calls = message_dict.get('tool_calls', [])
-                if tool_calls and len(tool_calls) > 0:
-                    logger.debug(f"Processing {len(tool_calls)} tool calls")
-                    # Используем ToolCallBuilder для каждого tool call
-                    processed_calls = []
-                    for call in tool_calls:
-                        # Создаем билдер напрямую из tool call
-                        processed_call = ToolCallBuilder.create(call).build()
-                        processed_calls.append(processed_call)
-                        logger.debug(f"Built tool call: {processed_call}")
-                    
-                    # Обрабатываем инструменты через менеджер
-                    if processed_calls:
-                        results = await tool_manager.process_tool_calls(processed_calls, messages)
-                        tool_results.extend(results)
-                        messages.extend([
-                            {"role": "assistant", "content": None, "tool_calls": processed_calls},
-                            *[{"role": "tool", "content": result.result.get("content"), "tool_call_id": result.call["id"]} for result in results]
-                        ])
-                        logger.debug("Updated messages with tool results")
-                        continue
-                
-                # Если нет tool_calls или они пустые, значит это финальный ответ
-                final_content = message_dict.get('content', '')
-                logger.debug(f"Final content: {final_content}")
-                break
-                
-            except Exception as e:
-                logger.error("API request failed: %s", str(e))
-                raise RuntimeError(f"API request failed: {str(e)}")
-        
-        if iteration >= self.max_iterations:
-            error_msg = f"Reached maximum number of iterations ({self.max_iterations})"
-            logger.warning(error_msg)
-            final_content = error_msg
-            
-        # Создаем IOMessage с результатом
-        response = IOMessage(
-            type="text",
-            content=final_content,
-            source="llm"
-        )
-        
-        # Добавляем информацию о вызванных инструментах
-        for result in tool_results:
-            response.add_tool_call(
-                tool_name=result.call["function"]["name"],
-                args=json.loads(result.call["function"]["arguments"]),
-                result=result.result.get("content"),
-                tool_id=result.call["id"]
+        try:
+            context = request_params.pop("context", None)
+            api_params = request_params.copy()
+
+            response = await self.client.chat.completions.create(**api_params)
+
+            tool_calls = []
+            if response.choices[0].message.tool_calls:
+                for call in response.choices[0].message.tool_calls:
+                    tool_name = call.function.name
+                    tool_params = json.loads(call.function.arguments)
+                    result = await self.tool_executor(tool_name, tool_params, context)
+                    tool_calls.append({
+                        "call": call,
+                        "result": {
+                            "content": result
+                        }
+                    })
+
+                messages = api_params["messages"].copy()
+                messages.append({
+                    "role": "assistant",
+                    "content": response.choices[0].message.content,
+                    "tool_calls": [tc["call"] for tc in tool_calls]
+                })
+
+                for tc in tool_calls:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["call"].id,
+                        "content": tc["result"]["content"]
+                    })
+
+                api_params["messages"] = messages
+                final_response = await self.client.chat.completions.create(**api_params)
+
+                return IOMessage(
+                    type="text",
+                    content=final_response.choices[0].message.content,
+                    source="openai",
+                    tool_calls=tool_calls,
+                    context=context
+                )
+
+            return IOMessage(
+                type="text",
+                content=response.choices[0].message.content,
+                source="openai",
+                tool_calls=tool_calls,
+                context=context
             )
-        
-        return response
+
+        except Exception as e:
+            logger.error("API request failed", exc_info=True)
+            raise RuntimeError(f"API request failed: {str(e)}")
 
     async def generate_response(
         self,
         messages: List[Dict[str, Any]],
-        tools: Optional[List[ToolSchema]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.7,
         stream: bool = False,
         **kwargs
     ) -> Union[LLMResponse, AsyncGenerator[IOMessage, None]]:
         """Генерирует ответ, при необходимости выполняя инструменты"""
         logger.debug("OpenAIService.generate_response called with stream=%s", stream)
-        
+
         request_params = {
             "model": self.provider.model,
             "messages": messages,
@@ -197,19 +147,16 @@ class OpenAIService(BaseLLM):
         }
         logger.debug("Initial request params: %s", request_params)
 
-        # Добавляем max_tokens если он указан в провайдере
         if self.provider.max_tokens is not None:
             request_params["max_tokens"] = self.provider.max_tokens
             logger.debug("Added max_tokens=%d", self.provider.max_tokens)
 
-        # Для ProxyAPI всегда добавляем max_tokens чтобы контролировать стоимость
-        if self.provider.is_proxy and "max_tokens" not in request_params:
+        if self.provider.provider == OLLAMA and "max_tokens" not in request_params:
             request_params["max_tokens"] = 1000  # Разумное ограничение по умолчанию
             logger.debug("Added default max_tokens=1000 for ProxyAPI")
 
         if tools:
-            request_params["tools"] = convert_tool_schema(tools)
-            # Используем "none" по умолчанию, чтобы модель не использовала инструменты без необходимости
+            request_params["tools"] = tools
             request_params["tool_choice"] = kwargs.get("tool_choice", "auto")
             logger.debug("Added %d tools and tool_choice=%s", len(tools), request_params["tool_choice"])
 
@@ -230,119 +177,207 @@ class OpenAIService(BaseLLM):
         elif hasattr(self.client.http_client, 'aclose'):
             await self.client.http_client.aclose()
 
-    async def _generate_stream_response(
-        self, 
-        request_params: Dict[str, Any]
-    ) -> AsyncGenerator[IOMessage, None]:
-        """Генерирует streaming ответ"""
+    async def _create_stream_chunk(
+        self,
+        content: str,
+        delta: Optional[str] = None,
+        tool_call: Any = None,
+        tool_result: Any = None,
+        error: Optional[str] = None,
+        is_complete: bool = False,
+        context: Any = None
+    ) -> IOMessage:
+        """Создает чанк для стриминга"""
+        logger.debug(
+            f"Creating stream chunk: content='{content}', delta='{delta}', tool_call={tool_call}, "
+            f"tool_result={tool_result}, error={error}, is_complete={is_complete}"
+        )
+
+        metadata = {"is_complete": is_complete, "delta": delta}
+        if error:
+            metadata["error"] = error
+
+        tool_calls = []
+        if tool_call:
+            tool_calls.append({
+                "call": tool_call,
+                "result": tool_result
+            })
+
+        chunk = IOMessage(
+            type="stream_chunk",
+            content=content,
+            metadata=metadata,
+            source="openai",
+            tool_calls=tool_calls,
+            context=context
+        )
+        logger.debug(f"Created chunk: {chunk}")
+        return chunk
+
+    async def _generate_stream_response(self, request_params: Dict[str, Any]) -> AsyncGenerator[IOMessage, None]:
+        """Генерирует потоковый ответ с поддержкой инструментов"""
+        current_content = ""
+        current_tool_builder = None
+        context = request_params.pop("context", None)
+        api_params = request_params.copy()
+        messages = api_params.get("messages", [])
+
+        tool_manager = ToolCallManager()
+        if hasattr(self, 'tool_executor'):
+            tool_manager.set_tool_executor(self.tool_executor)
+        if context:
+            tool_manager.set_context(context)
+
         try:
-            logger.debug(f"Starting stream response generation")
-            current_content = ""
-            current_tool_builder = None
-            
-            # Создаем локальный tool_manager для этого запроса
-            tool_manager = ToolCallManager()
-            if hasattr(self, 'tool_executor'):
-                tool_manager.set_tool_executor(self.tool_executor)
-            
-            for iteration in range(self.max_iterations):
-                logger.debug(f"Iteration {iteration + 1}/{self.max_iterations}")
-                
-                # Создаем стрим
-                stream = await self.client.chat.completions.create(**request_params)
-                logger.debug(f"Stream created successfully, type: {type(stream)}")
-                logger.debug("Starting to process stream chunks")
-                
-                async for chunk in stream:
-                    if not chunk.choices:
-                        logger.debug("Received chunk without choices")
-                        continue
-                        
-                    delta = chunk.choices[0].delta
-                    logger.debug(f"Received delta: {delta}")
-                    
-                    # Пропускаем пустые дельты в начале
-                    if not delta.content and not delta.tool_calls and delta.role == 'assistant':
-                        logger.debug("Skipping initial empty delta")
-                        continue
-                    
-                    # Обрабатываем контент если есть
-                    if delta.content:
-                        current_content += delta.content
-                        chunk = tool_manager._create_stream_chunk(
-                            content=current_content,
-                            delta=delta.content
-                        )
-                        logger.debug(f"Created stream chunk with content: {current_content}, delta: {delta.content}")
-                        yield chunk
-                        continue
-                    
-                    # Обрабатываем tool calls если есть
-                    if delta.tool_calls and len(delta.tool_calls) > 0:
-                        chunk_tool_call = delta.tool_calls[0]
-                        logger.debug(f"Processing tool call: {chunk_tool_call}")
-                        
-                        # Создаем новый builder если нужно
-                        if current_tool_builder is None:
-                            current_tool_builder = ToolCallBuilder()
-                        
-                        # Добавляем информацию из чанка
-                        current_tool_builder.add_chunk(chunk_tool_call)
-                        
-                        # Если tool call готов - обрабатываем
-                        if current_tool_builder.can_build():
-                            tool_call = current_tool_builder.build()
-                            result = await tool_manager.handle_stream_chunk(
-                                tool_call,
-                                messages=request_params["messages"]
-                            )
-                            
-                            if result:
-                                # Создаем чанк с информацией о вызове и результате
-                                chunk = tool_manager._create_stream_chunk(
-                                    content=current_content,
-                                    delta=""
-                                )
-                                # Добавляем информацию о вызове и результате
-                                chunk.add_tool_call(
-                                    tool_name=tool_call["function"]["name"],
-                                    args=json.loads(tool_call["function"]["arguments"]),
-                                    result=result["result"]["content"],
-                                    tool_id=tool_call["id"]
-                                )
-                                yield chunk
-                                
-                                # Создаем новый стрим с обновленной историей
-                                request_params["messages"] = result["updated_messages"]
-                                current_tool_builder = None
-                                break
-                                
-                        continue
-                    
-                    # Если пустой чанк и нет незавершенного tool call - отправляем финальный чанк
-                    if not current_tool_builder and current_content:
-                        yield tool_manager._create_stream_chunk(
-                            content=current_content,
-                            is_complete=True
-                        )
-                        return
-                        
-                # Если вышли из цикла по чанкам, но есть незавершенный tool call - продолжаем
-                if current_tool_builder:
-                    continue
-                    
-            logger.debug("Stream generation completed")
-            
-            # Отправляем финальный чанк если есть контент
-            if current_content:
-                yield tool_manager._create_stream_chunk(
-                    content=current_content,
-                    is_complete=True
-                )
-            
+            # Убираем параметр stream из запроса, он передается явно
+            api_params.pop("stream", None)
+            stream = await self.client.chat.completions.create(**api_params, stream=True)
+            logger.debug("Получен потоковый ответ от API")
         except Exception as e:
-            logger.error(f"Error generating stream response: {e}", exc_info=True)
-            yield tool_manager._create_stream_chunk(
-                content=f"Error: {str(e)}",
-                is_complete=True
+            logger.error(f"Stream request failed: {e}", exc_info=True)
+            error_chunk = await self._create_stream_chunk(
+                content="Извините, произошла ошибка при обработке запроса.",
+                error=str(e),
+                context=context
             )
+            yield error_chunk
+            return
+
+        async for chunk in stream:
+            try:
+                if not chunk.choices:
+                    continue
+
+                choice = chunk.choices[0]
+                delta = getattr(choice, 'delta', None)
+                if delta is None:
+                    continue
+
+                finish_reason = getattr(choice, 'finish_reason', None)
+                if finish_reason:
+                    final_chunk = await self._create_stream_chunk(
+                        content=current_content,
+                        is_complete=True,
+                        context=context
+                    )
+                    logger.debug("Финальный чанк отправлен по finish_reason")
+                    yield final_chunk
+                    continue
+
+                # Обработка контента
+                content_delta = getattr(delta, 'content', None)
+                if content_delta:
+                    current_content += content_delta
+                    content_chunk = await self._create_stream_chunk(
+                        content=current_content,
+                        delta=content_delta,
+                        context=context
+                    )
+                    logger.debug("Отправляется чанк с контентом")
+                    yield content_chunk
+
+                # Обработка инструментов (tool_calls)
+                tool_calls_delta = getattr(delta, 'tool_calls', None)
+                if tool_calls_delta:
+                    if current_tool_builder is None:
+                        current_tool_builder = ToolCallBuilder()
+                        logger.debug("Создан новый ToolCallBuilder")
+                    for tool_call_delta in tool_calls_delta:
+                        current_tool_builder.add_chunk(tool_call_delta)
+                        logger.debug("Добавлен чанк в ToolCallBuilder")
+                    if current_tool_builder.can_build():
+                        processed_call = current_tool_builder.build()
+                        logger.debug(f"Собран tool call: {processed_call}")
+                        results = await tool_manager.process_tool_calls([processed_call])
+                        logger.debug(f"Получены результаты инструментов: {results}")
+                        if results and results[0].result:
+                            tool_call_id = (
+                                processed_call["id"]
+                                if isinstance(processed_call, dict)
+                                else processed_call.id
+                            )
+                            tool_chunk = await self._create_stream_chunk(
+                                content=current_content,
+                                tool_call=processed_call,
+                                tool_result=results[0].result,
+                                context=context
+                            )
+                            logger.debug("Отправляется чанк с результатом инструмента")
+                            yield tool_chunk
+                            messages.append({
+                                "role": "assistant",
+                                "content": current_content,
+                                "tool_calls": [processed_call]
+                            })
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": results[0].result["content"]
+                            })
+                            api_params["messages"] = messages
+                            logger.debug("Обновлены сообщения для следующего запроса")
+                            
+                            # Сброс только builder
+                            current_tool_builder = None
+                            # НЕ сбрасываем current_content
+                            
+                            # Делаем новый запрос с результатами tool calls
+                            logger.debug("Отправляем новый запрос к LLM с результатами инструментов")
+                            try:
+                                new_stream = await self.client.chat.completions.create(
+                                    **api_params,
+                                    stream=True
+                                )
+                                async for new_chunk in new_stream:
+                                    if not new_chunk.choices:
+                                        continue
+                                        
+                                    choice = new_chunk.choices[0]
+                                    delta = getattr(choice, 'delta', None)
+                                    if delta is None:
+                                        continue
+                                        
+                                    content_delta = getattr(delta, 'content', None)
+                                    if content_delta:
+                                        current_content += content_delta  # Добавляем к существующему контенту
+                                        content_chunk = await self._create_stream_chunk(
+                                            content=current_content,
+                                            delta=content_delta,
+                                            context=context
+                                        )
+                                        logger.debug("Отправляется чанк с ответом на результаты инструментов")
+                                        yield content_chunk
+                                        
+                                    finish_reason = getattr(choice, 'finish_reason', None)
+                                    if finish_reason:
+                                        final_chunk = await self._create_stream_chunk(
+                                            content=current_content,
+                                            is_complete=True,
+                                            context=context
+                                        )
+                                        logger.debug("Финальный чанк отправлен после обработки инструментов")
+                                        yield final_chunk
+                                        break
+                                        
+                            except Exception as e:
+                                logger.error(f"Error in follow-up request: {e}", exc_info=True)
+                                error_chunk = await self._create_stream_chunk(
+                                    content="Извините, произошла ошибка при обработке результатов инструментов.",
+                                    error=str(e),
+                                    context=context
+                                )
+                                yield error_chunk
+                                
+            except Exception as e:
+                logger.error(f"Error processing chunk: {e}", exc_info=True)
+                continue
+
+        if current_content:
+            final_chunk = await self._create_stream_chunk(
+                content=current_content,
+                is_complete=True,
+                context=context
+            )
+            logger.debug("Стрим завершен, отправляется финальный чанк")
+            yield final_chunk

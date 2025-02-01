@@ -8,12 +8,12 @@ from cognistruct.llm import LLMRouter
 from cognistruct.core import BaseAgent
 from cognistruct.plugins.tools.calculate import CalculatorPlugin
 from cognistruct.plugins.io.console import ConsolePlugin
-from cognistruct.plugins.storage.short_memory import ShortTermMemoryPlugin
+from cognistruct.plugins.storage.short_memory import ShortMemoryPlugin
 from cognistruct.plugins.storage.long_memory import LongTermMemoryPlugin
 
 # Раскомментируйте для включения логирования
-#from cognistruct.utils.logging import init_logging
-#init_logging(level=logging.DEBUG)
+from cognistruct.utils.logging import init_logging
+init_logging(level=logging.DEBUG)
 
 # Конфигурация LLM (выберите один вариант)
 LLM_CONFIG = {
@@ -26,7 +26,13 @@ LLM_CONFIG = {
      "provider": "deepseek",
      "model": "deepseek-chat",
      "api_key": Config.load().deepseek_api_key,
-     "temperature": 0.5  # Добавляем температуру (0.0 - более точные ответы, 1.0 - более креативные)
+
+    "provider": "proxyapi",
+    "model": "gpt-4o",
+    "api_key": Config.load().proxyapi_key,
+    "max_tokens": 8192,
+
+    "temperature": 0.7  # Добавляем температуру (0.0 - более точные ответы, 1.0 - более креативные)
 }
 
 # Системный промпт для агента
@@ -69,7 +75,7 @@ async def main():
             use_emojis=True,
             refresh_rate=10  # Частота обновления стриминга
         )
-        short_memory = ShortTermMemoryPlugin(
+        short_memory = ShortMemoryPlugin(
             max_messages=10  # Максимальное количество сообщений в памяти
         )
         long_memory = LongTermMemoryPlugin()

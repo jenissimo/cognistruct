@@ -53,7 +53,7 @@ class ProjectStoragePlugin(BasePlugin):
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS projects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
+                user_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 description TEXT,
                 created_at REAL,

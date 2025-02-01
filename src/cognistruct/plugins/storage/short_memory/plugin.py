@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 from pathlib import Path
 
 from cognistruct.core.base_plugin import BasePlugin, PluginMetadata, IOMessage
+from cognistruct.core import RequestContext
 from cognistruct.utils import Config, init_logging, setup_logger, get_timezone
 
 logger = setup_logger(__name__)
@@ -44,7 +45,7 @@ class ShortMemoryPlugin(BasePlugin):
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS memory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
+                user_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 metadata TEXT,
@@ -61,14 +62,32 @@ class ShortMemoryPlugin(BasePlugin):
         await self._db.close()
         await super().cleanup()
 
-    async def add_message(self, role: str, content: str, metadata: Optional[Dict] = None):
-        """Добавляет сообщение в базу данных (без удаления старых записей)"""
-        user_id = metadata.get("user_id") if metadata else None
+    async def add_message(self, role: str, content: str, metadata: Optional[Dict] = None, context: Optional['RequestContext'] = None):
+        """
+        Добавляет сообщение в базу данных (без удаления старых записей)
+        
+        Args:
+            role: Роль отправителя (user/assistant)
+            content: Текст сообщения
+            metadata: Метаданные сообщения
+            context: Контекст запроса
+        """
+        # Пытаемся получить user_id из разных источников
+        user_id = None
+        
+        # 1. Пробуем взять из контекста
+        if context:
+            user_id = context.user_id
+        
+        # 2. Если нет в контексте, ищем в метаданных
+        if not user_id and metadata:
+            user_id = metadata.get("user_id")
+        
         if not user_id:
-            # Если нет user_id в метаданных, можно пропустить сообщение или залогировать
-            logger.warning("No user_id in metadata, skipping message")
+            # Если нигде нет user_id, пропускаем сообщение
+            logger.warning("No user_id in context or metadata, skipping message")
             return
-            
+        
         # Очищаем метаданные от несериализуемых объектов
         clean_metadata = {}
         if metadata:
@@ -120,9 +139,10 @@ class ShortMemoryPlugin(BasePlugin):
         await self.add_message(
             role="user",
             content=message.content,
-            metadata=message.metadata
+            metadata=message.metadata,
+            context=message.context
         )
-        return False  # Продолжаем обработку
+        return True  # Продолжаем обработку, не блокируем сообщение
 
     async def output_hook(self, message: IOMessage) -> Optional[IOMessage]:
         """Сохраняет ответ ассистента"""
@@ -130,7 +150,8 @@ class ShortMemoryPlugin(BasePlugin):
             await self.add_message(
                 role="assistant",
                 content=message.content.content if hasattr(message.content, 'content') else message.content,
-                metadata=message.metadata
+                metadata=message.metadata,
+                context=message.context
             )
         return message
 

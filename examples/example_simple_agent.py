@@ -10,8 +10,8 @@ from cognistruct.plugins.tools.calculate import CalculatorPlugin
 from cognistruct.plugins.io.console import ConsolePlugin
 
 # Раскомментируйте для включения логирования
-from cognistruct.utils.logging import init_logging
-#init_logging(level=logging.DEBUG)
+# from cognistruct.utils.logging import init_logging
+# init_logging(level=logging.DEBUG)
 
 # Конфигурация LLM (выберите один вариант)
 LLM_CONFIG = {
@@ -37,6 +37,7 @@ LLM_CONFIG = {
 SYSTEM_PROMPT = """
 Ты - полезный ассистент. Для математических вычислений используй инструмент calculate.
 """.strip()
+
 
 async def main():
     """Точка входа"""
@@ -68,7 +69,7 @@ async def main():
             partial(
                 agent.handle_message,
                 system_prompt=SYSTEM_PROMPT,
-                stream=True
+                stream=True  # Отключаем стриминг для тестирования
             )
         )
         

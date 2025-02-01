@@ -6,7 +6,7 @@ import zoneinfo
 import uuid
 import logging
 
-from cognistruct.core import BasePlugin, IOMessage, PluginMetadata
+from cognistruct.core import BasePlugin, IOMessage, PluginMetadata, RequestContext
 from cognistruct.llm.interfaces import ToolSchema, ToolParameter
 from .database import SchedulerDatabase
 from cognistruct.utils.logging import setup_logger
@@ -37,12 +37,12 @@ class SchedulerPlugin(BasePlugin):
         return [
             ToolSchema(
                 name="schedule_task",
-                description="Планировщик твоих задач. Планирует отложенную задачу (например напомнить пользователю о чем-то) в указанное время или с заданной периодичностью. Если тебе не хватает контекста о дате/времени выполнения задачи, то уточни его у пользователя.",
+                description="Планирует отложенную задачу в виде промпта для тебя (например напомнить пользователю о чем-то) в указанное время или с заданной периодичностью. Если тебе не хватает контекста о дате/времени выполнения задачи, то уточни его у пользователя.",
                 parameters=[
                     ToolParameter(
                         name="task_prompt",
                         type="string",
-                        description="Промпт для LLM, описывающий что нужно сделать в указанное время, например \"Напомнить купить молоко\" или \"Написать мотивирующее сообщение\"."
+                        description="Промпт для LLM, описывающий что нужно сделать в указанное время, например \"Напомнить пользователю купить молоко\" или \"Написать пользователю мотивирующее сообщение\"."
                     ),
                     ToolParameter(
                         name="scheduled_for",
@@ -82,7 +82,7 @@ class SchedulerPlugin(BasePlugin):
         """Включает ранее отключенный инструмент"""
         self._disabled_tools.discard(tool_name)
         
-    async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_tool(self, tool_name: str, params: Dict[str, Any], context: Optional['RequestContext'] = None) -> Dict[str, Any]:
         print(f"Executing tool {tool_name} with params: {params}")
         
         if tool_name in self._disabled_tools:
@@ -93,6 +93,9 @@ class SchedulerPlugin(BasePlugin):
             task_prompt = params["task_prompt"]
             scheduled_for = datetime.strptime(params["scheduled_for"], "%d.%m.%Y %H:%M:%S")
             recurrence = params.get("recurrence", "none")
+            
+            # Получаем user_id из контекста или параметров
+            user_id = context.user_id if context else None
             
             # Рассчитываем интервал повторения
             interval = None
@@ -108,7 +111,7 @@ class SchedulerPlugin(BasePlugin):
             # Добавляем задачу в БД
             await self.db.add_task(
                 task_id=task_id,
-                user_id=None,  # будет браться из контекста
+                user_id=user_id,  # используем user_id из контекста
                 name="llm_task",
                 task_prompt=task_prompt,
                 next_run=scheduled_for,
@@ -154,6 +157,19 @@ class SchedulerPlugin(BasePlugin):
                     await self.disable_tool("list_tasks")
                     
                     try:
+                        # Создаем контекст запроса
+                        request_context = RequestContext(
+                            user_id=task["user_id"],
+                            metadata={
+                                "scheduled": True,
+                                "task_id": task["id"],
+                                "platform": "scheduler",
+                                "task_prompt": task["task_prompt"],
+                                "next_run": task["next_run"]
+                            },
+                            timestamp=datetime.now().timestamp()
+                        )
+                        
                         # Создаем сообщение с промптом для LLM
                         message = IOMessage(
                             type="text",
@@ -162,29 +178,16 @@ class SchedulerPlugin(BasePlugin):
                                 "user_id": task["user_id"],
                                 "scheduled": True,
                                 "task_id": task["id"]
-                            }
+                            },
+                            source="scheduler",
+                            context=request_context
                         )
                         
                         # Обрабатываем промпт через LLM
-                        response = await self.agent.handle_message(
+                        await self.agent.handle_message(
                             message,
                             stream=False
                         )
-                        
-                        # Отправляем ответ пользователю
-                        if response and response.content:
-                            await self.agent.handle_message(
-                                IOMessage(
-                                    type="text",
-                                    content=response.content,
-                                    metadata={
-                                        "user_id": task["user_id"],
-                                        "scheduled": True,
-                                        "task_id": task["id"]
-                                    }
-                                ),
-                                stream=False
-                            )
                         
                     finally:
                         # Включаем инструменты обратно

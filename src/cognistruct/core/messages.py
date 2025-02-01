@@ -1,22 +1,73 @@
 """Модуль с базовыми классами для сообщений"""
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, AsyncGenerator, List
+from typing import Dict, Any, Optional, AsyncGenerator, List, TYPE_CHECKING
 import time
 import json
+
+if TYPE_CHECKING:
+    from .context import RequestContext
 
 
 @dataclass
 class IOMessage:
-    """Сообщение для I/O хуков"""
-    type: str = "text"           # Тип сообщения (text, stream, etc)
-    content: Any = None          # Содержимое сообщения
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Дополнительные данные
-    source: str = ""            # Источник сообщения
-    timestamp: float = field(default_factory=time.time)  # Время создания
-    stream: Optional[AsyncGenerator['IOMessage', None]] = None  # Стрим возвращает IOMessage
-    is_async: bool = False       # Флаг асинхронного режима
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)  # История использованных инструментов
+    """
+    Универсальный формат сообщения для обмена между компонентами системы.
+    Поддерживает как обычные сообщения, так и стриминг.
+    
+    Attributes:
+        type: Тип сообщения (например, "text", "image", "audio")
+        content: Содержимое сообщения
+        metadata: Дополнительные данные (например, для Telegram - reply_to, inline_keyboard)
+        source: Источник сообщения (например, "telegram", "console", "llm")
+        is_async: Флаг асинхронности (для стриминга)
+        stream: Генератор для стриминга
+        tool_calls: История вызовов инструментов
+        context: Контекст запроса
+    """
+    type: str
+    content: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    source: str = ""
+    is_async: bool = False
+    stream: Optional[AsyncGenerator['IOMessage', None]] = None
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    context: Optional['RequestContext'] = None
+
+    def __post_init__(self):
+        if self.metadata is None:
+            self.metadata = {}
+        if self.tool_calls is None:
+            self.tool_calls = []
+
+    @property
+    def context(self) -> Optional['RequestContext']:
+        """Получить контекст сообщения."""
+        return self._context
+
+    @context.setter
+    def context(self, value: Optional['RequestContext']):
+        """Установить контекст сообщения."""
+        self._context = value
+
+    def with_context(self, context: Optional['RequestContext']) -> 'IOMessage':
+        """Создает копию сообщения с новым контекстом"""
+        msg = self.copy()
+        msg.context = context
+        return msg
+
+    def copy(self) -> 'IOMessage':
+        """Создает копию сообщения"""
+        return IOMessage(
+            type=self.type,
+            content=self.content,
+            metadata=self.metadata.copy(),
+            source=self.source,
+            is_async=self.is_async,
+            stream=self.stream,
+            tool_calls=self.tool_calls.copy(),
+            context=self.context
+        )
 
     @classmethod
     def create_stream(cls, generator: AsyncGenerator[Any, None], is_async: bool = True, **kwargs) -> 'IOMessage':
@@ -31,31 +82,37 @@ class IOMessage:
         Returns:
             IOMessage: Сообщение со стримом
         """
+        context = kwargs.pop('context', None)
         return cls(
             type="stream",
-            stream=cls._wrap_generator(generator),
+            stream=cls._wrap_generator(generator, context=context),
             is_async=is_async,
+            context=context,
             **kwargs
         )
     
     @classmethod
-    async def _wrap_generator(cls, generator: AsyncGenerator[Any, None]) -> AsyncGenerator['IOMessage', None]:
+    async def _wrap_generator(cls, generator: AsyncGenerator[Any, None], context: Optional['RequestContext'] = None) -> AsyncGenerator['IOMessage', None]:
         """
         Оборачивает любой генератор в генератор IOMessage
         
         Args:
             generator: Исходный генератор данных
+            context: Контекст для чанков
             
         Yields:
             IOMessage: Чанки данных в виде сообщений
         """
         async for chunk in generator:
             if isinstance(chunk, IOMessage):
+                if context and not chunk.context:
+                    chunk.context = context
                 yield chunk
             else:
                 yield cls(
                     type="stream_chunk",
-                    content=chunk
+                    content=chunk,
+                    context=context
                 )
 
     def add_tool_call(self, tool_name: str, args: Dict[str, Any], result: Any = None, tool_id: str = None) -> None:

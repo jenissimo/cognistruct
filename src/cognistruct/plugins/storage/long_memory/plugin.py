@@ -8,6 +8,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from cognistruct.core.base_plugin import BasePlugin, PluginMetadata, IOMessage
+from cognistruct.core import RequestContext
 from cognistruct.llm.interfaces import ToolSchema, ToolParameter
 
 
@@ -85,7 +86,7 @@ class LongTermMemoryPlugin(BasePlugin):
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
+                user_id TEXT,
                 content TEXT NOT NULL,
                 tags TEXT NOT NULL,
                 last_accessed DATETIME,
@@ -178,24 +179,32 @@ class LongTermMemoryPlugin(BasePlugin):
         indices = np.argsort(final_scores)[::-1][:self.max_context_memories]
         return [memories[i] for i in indices]
         
-    async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> str:
-        """Выполняет инструмент"""
+    async def execute_tool(self, tool_name: str, params: Dict[str, Any], context: Optional['RequestContext'] = None) -> str:
+        """
+        Выполняет инструмент
+        
+        Args:
+            tool_name: Имя инструмента
+            params: Параметры вызова
+            context: Контекст запроса
+        """
+        # Получаем user_id из контекста или параметров
+        user_id = context.user_id if context else params.get("user_id")
+        
         if tool_name == "remember":
-            print("Remember tool called")
-            print(params)
             # Преобразуем строку тегов в список
             tags = [tag.strip() for tag in params["tags"].split(",") if tag.strip()]
             await self.add_memory(
                 params["fact"], 
                 tags,
-                params.get("user_id")
+                user_id
             )
             return f"Запомнил: {params['fact']}"
             
         elif tool_name == "recall":
             memories = await self.search_memories(
                 params["query"],
-                params.get("user_id")  # Добавляем поддержку user_id
+                user_id
             )
             if not memories:
                 return "Не могу ничего вспомнить по этому запросу"

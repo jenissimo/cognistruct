@@ -1,5 +1,6 @@
 import asyncio
-from typing import Optional, Any, Callable, Awaitable, AsyncGenerator
+import uuid
+from typing import Optional, Any, Callable, Awaitable, AsyncGenerator, Union
 import sys
 from rich import print
 from rich.markdown import Markdown
@@ -8,7 +9,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.console import Group, Console
 
-from cognistruct.core import BasePlugin, PluginMetadata, IOMessage
+from cognistruct.core import BasePlugin, PluginMetadata, IOMessage, RequestContext
 from cognistruct.utils.logging import setup_logger
 
 logger = setup_logger(__name__)
@@ -16,6 +17,9 @@ logger = setup_logger(__name__)
 
 class ConsolePlugin(BasePlugin):
     """Плагин для работы с консольным вводом/выводом с поддержкой стриминга"""
+    
+    # Константы для контекста
+    DEFAULT_USER_ID = "console_user"
     
     def __init__(self, 
                  prompt: str = "👤 ",
@@ -40,11 +44,20 @@ class ConsolePlugin(BasePlugin):
         self.use_markdown = use_markdown
         self.use_emojis = use_emojis
         self.refresh_rate = refresh_rate
-        self.message_handler: Optional[Callable[[IOMessage], Awaitable[None]]] = None
+        self.message_handler: Optional[Callable[
+            [Union[str, IOMessage], ...],  # Поддержка разных типов входа и доп. параметров
+            Union[str, AsyncGenerator[IOMessage, None]]  # Поддержка обычных ответов и стриминга
+        ]] = None
         self._running = False
         self.console = Console()
         self._input_future: Optional[asyncio.Future] = None
         self._current_stream: Optional[Live] = None
+        self._session_id = str(uuid.uuid4())  # Уникальный ID сессии
+        
+    async def setup(self):
+        """Инициализация плагина"""
+        await super().setup()
+        logger.info("Initialized console plugin with default user ID: %s", self.DEFAULT_USER_ID)
         
     def get_metadata(self) -> PluginMetadata:
         return PluginMetadata(
@@ -54,8 +67,20 @@ class ConsolePlugin(BasePlugin):
             priority=100  # Высокий приоритет для I/O
         )
         
-    def set_message_handler(self, handler: Callable[[IOMessage], Awaitable[None]]):
-        """Устанавливает обработчик сообщений"""
+    def set_message_handler(
+        self, 
+        handler: Callable[
+            [Union[str, IOMessage], ...],  # Поддержка разных типов входа и доп. параметров
+            Union[str, AsyncGenerator[IOMessage, None]]  # Поддержка обычных ответов и стриминга
+        ]
+    ):
+        """
+        Устанавливает обработчик сообщений.
+        
+        Args:
+            handler: Функция-обработчик, принимающая сообщение (строку или IOMessage)
+                    и возвращающая строку или генератор сообщений для стриминга
+        """
         self.message_handler = handler
         
     async def start(self):
@@ -70,20 +95,47 @@ class ConsolePlugin(BasePlugin):
                     print(self.exit_message)
                     break
                     
-                # Создаем сообщение
+                # Создаем контекст для сообщения с дефолтным user_id
+                context = RequestContext(
+                    user_id=self.DEFAULT_USER_ID,
+                    metadata={
+                        "source": "console"
+                    }
+                )
+                
+                # Создаем сообщение с контекстом
                 message = IOMessage(
                     type="console_input",
                     content=user_input,
-                    source="console"
+                    source="console",
+                    context=context
                 )
                 
                 # Передаем сообщение обработчику
                 if self.message_handler:
                     response = await self.message_handler(message)
-                    if hasattr(response, '__aiter__'):
-                        logger.debug("Got streaming response, starting iteration")
-                        async for chunk in response:
-                            # Просто проходим по чанкам, их обработка уже в streaming_output_hook
+                    
+                    if isinstance(response, (str, IOMessage)):
+                        # Для текстового ответа создаем IOMessage
+                        if isinstance(response, str):
+                            response = IOMessage(
+                                type="text",
+                                content=response,
+                                source="agent",
+                                context=context  # Добавляем контекст
+                            )
+                        # BaseAgent сам вызовет output_hook
+                        
+                    elif hasattr(response, '__aiter__'):
+                        # Для стрима создаем IOMessage со стримом
+                        stream_message = IOMessage.create_stream(
+                            response, 
+                            source="agent",
+                            context=context  # Добавляем контекст
+                        )
+                        # Пропускаем через streaming_output_hook
+                        async for chunk in self.streaming_output_hook(stream_message):
+                            # Чанки уже обработаны в streaming_output_hook
                             pass
                 
             except KeyboardInterrupt:
@@ -316,16 +368,135 @@ class ConsolePlugin(BasePlugin):
             yield message
             return
             
-        # Состояние стрима
-        if not hasattr(self, '_stream_state'):
-            logger.debug("Initializing stream state")
-            self._stream_state = {
-                'sections': [{"type": "text", "content": ""}],  # Начальная текстовая секция
-                'current_content': "",
-                'current_tool': None
-            }
+        # Инициализируем состояние стрима если его еще нет
+        if not hasattr(self, '_stream_state') or not hasattr(self, '_current_stream') or self._current_stream is None:
+            logger.debug("Initializing stream state (stream_state exists: %s, current_stream exists: %s)", 
+                        hasattr(self, '_stream_state'), 
+                        hasattr(self, '_current_stream'))
+            self._init_stream_state()
             
-            # Создаем Live панель
+        try:
+            # Флаг для отслеживания незавершенных тул коллов
+            has_pending_tools = False
+            
+            # Сразу начинаем итерацию по стриму
+            logger.debug("Starting stream iteration")
+            async for chunk in message.stream:
+                logger.debug("Processing chunk: %s", chunk)
+                
+                # Проверяем состояние стрима
+                if not hasattr(self, '_current_stream') or self._current_stream is None:
+                    logger.warning("Stream state lost, reinitializing")
+                    self._init_stream_state()
+                
+                # Проверяем завершение
+                if chunk.metadata.get("is_complete"):
+                    logger.debug("Stream complete, checking tool calls state")
+                    logger.debug("Current content: %s", self._stream_state['current_content'])
+                    logger.debug("Has pending tools: %s", has_pending_tools)
+                    logger.debug("Current sections: %s", self._stream_state['sections'])
+                    
+                    # Проверяем, есть ли что-то в текущем контенте
+                    has_content = bool(self._stream_state['current_content'].strip())
+                    logger.debug("Has content: %s", has_content)
+                    
+                    # Делаем полную очистку только если:
+                    # 1. Нет незавершенных тул коллов
+                    # 2. Нет контента для отображения
+                    # 3. Последняя секция не пустая
+                    last_section_empty = (
+                        self._stream_state['sections'][-1]["type"] == "text" 
+                        and not self._stream_state['sections'][-1]["content"].strip()
+                    ) if self._stream_state['sections'] else True
+                    
+                    if not has_pending_tools and not has_content and not last_section_empty:
+                        logger.debug("No pending tools, no content, and last section not empty - doing final cleanup")
+                        self._cleanup_stream(final=True)
+                    else:
+                        logger.debug("Skipping cleanup (pending tools: %s, has content: %s, last section empty: %s)", 
+                                   has_pending_tools, has_content, last_section_empty)
+                        has_pending_tools = False  # Сбрасываем флаг для следующего стрима
+                    yield chunk
+                    continue
+                
+                # Обновляем отображение если есть delta
+                if chunk.metadata.get("delta"):
+                    delta = chunk.metadata["delta"]
+                    logger.debug("Got delta: %s", delta)
+                    # Добавляем текст в последнюю текстовую секцию
+                    for section in reversed(self._stream_state['sections']):
+                        if section["type"] == "text":
+                            section["content"] += delta
+                            break
+                    self._stream_state['current_content'] += delta
+                
+                # Обрабатываем tool_calls
+                if chunk.tool_calls:
+                    logger.debug("Processing tool calls: %s", chunk.tool_calls)
+                    last_call = chunk.tool_calls[-1]
+                    if "call" in last_call:
+                        has_pending_tools = True
+                        logger.debug("Found pending tool call")
+                        # Добавляем секцию для тул колла
+                        self._stream_state['sections'].append({"type": "tool", "content": last_call["call"]})
+                        
+                    if "call" in last_call and "result" in last_call:
+                        has_pending_tools = False
+                        logger.debug("Tool call completed")
+                        # Добавляем только секцию с результатом и новую текстовую
+                        self._stream_state['sections'].append({
+                            "type": "result", 
+                            "content": last_call["result"]["content"]
+                        })
+                        self._stream_state['sections'].append({"type": "text", "content": ""})
+                        # Сбрасываем только текущий контент
+                        self._stream_state['current_content'] = ""
+                
+                # Обновляем отображение
+                try:
+                    if self._current_stream:
+                        self._current_stream.update(self._render_sections())
+                        logger.debug("Updated live panel")
+                    else:
+                        logger.warning("Live panel is None, skipping update")
+                except Exception as e:
+                    logger.error(f"Error updating live panel: {e}", exc_info=True)
+                    # Пробуем восстановить состояние
+                    self._init_stream_state()
+                    
+                yield chunk
+            
+            # Если стрим закончился без is_complete, проверяем флаг
+            if not has_pending_tools:
+                logger.debug("Stream ended without is_complete, no pending tools, doing final cleanup")
+                self._cleanup_stream(final=True)
+            else:
+                logger.debug("Stream ended without is_complete but has pending tools, skipping cleanup")
+            
+        except Exception as e:
+            logger.error(f"Error in streaming_output_hook: {e}", exc_info=True)
+            if not has_pending_tools:
+                self._cleanup_stream(final=True)
+            raise
+            
+    def _init_stream_state(self):
+        """Инициализирует состояние стрима"""
+        logger.debug("Initializing stream state")
+        
+        # Сохраняем старые секции если они есть
+        old_sections = []
+        if hasattr(self, '_stream_state'):
+            old_sections = self._stream_state['sections']
+            
+        self._stream_state = {
+            'sections': old_sections if old_sections else [{"type": "text", "content": ""}],
+            'current_content': "",
+            'current_tool': None
+        }
+        
+        # Создаем Live панель если её еще нет или она None
+        if not hasattr(self, '_current_stream') or self._current_stream is None:
+            logger.debug("Creating new live panel")
             self._current_stream = Live(
                 self._render_sections(),
                 console=self.console,
@@ -336,71 +507,32 @@ class ConsolePlugin(BasePlugin):
             )
             self._current_stream.start()
             logger.debug("Live panel started")
-            
-        try:
-            # Создаем новый генератор для стрима
-            async def process_stream():
-                async for chunk in message.stream:
-                    logger.debug("Processing chunk: %s", chunk)
-                    # Обновляем отображение
-                    if chunk.metadata.get("delta"):
-                        delta = chunk.metadata["delta"]
-                        logger.debug("Got delta: %s", delta)
-                        # Добавляем текст в последнюю текстовую секцию
-                        for section in reversed(self._stream_state['sections']):
-                            if section["type"] == "text":
-                                section["content"] += delta
-                                break
-                        self._stream_state['current_content'] += delta
-                    
-                    # Обрабатываем tool_calls
-                    if chunk.tool_calls:
-                        logger.debug("Processing tool calls: %s", chunk.tool_calls)
-                        last_call = chunk.tool_calls[-1]
-                        if "call" in last_call and "result" in last_call:
-                            self._stream_state['sections'].append({"type": "tool", "content": last_call["call"]})
-                            self._stream_state['sections'].append({
-                                "type": "result", 
-                                "content": last_call["result"]["content"]
-                            })
-                            self._stream_state['sections'].append({"type": "text", "content": ""})
-                    
-                    # Обновляем отображение
-                    self._current_stream.update(self._render_sections())
-                    logger.debug("Updated live panel")
-                    
-                    # Проверяем завершение
-                    if chunk.metadata.get("is_complete"):
-                        logger.debug("Stream complete, stopping live panel")
-                        self._current_stream.stop()
-                        self.console.print(self._render_sections())
-                        self._current_stream = None
-                        delattr(self, '_stream_state')
-                        
-                    yield chunk
-            
-            # Создаем новое сообщение со стримом
-            new_message = IOMessage(
-                type=message.type,
-                content=message.content,
-                metadata=message.metadata,
-                source=message.source,
-                is_async=True,
-                tool_calls=message.tool_calls.copy() if message.tool_calls else [],
-                stream=process_stream()
-            )
-            
-            logger.debug("Yielding new message with stream")
-            yield new_message
-            
-        except Exception as e:
-            logger.error(f"Error in streaming_output_hook: {e}", exc_info=True)
-            if self._current_stream:
-                self._current_stream.stop()
-                self._current_stream = None
+        else:
+            logger.debug("Using existing live panel")
+        
+    def _cleanup_stream(self, final: bool = False):
+        """
+        Очищает состояние стрима
+        
+        Args:
+            final: Если True, полностью очищает состояние и останавливает панель
+        """
+        logger.debug("Cleaning up stream (final=%s)", final)
+        if final:
+            if hasattr(self, '_current_stream') and self._current_stream:
+                try:
+                    self._current_stream.stop()
+                    self.console.print(self._render_sections())
+                except Exception as e:
+                    logger.error(f"Error stopping live panel: {e}", exc_info=True)
+                finally:
+                    self._current_stream = None
             if hasattr(self, '_stream_state'):
                 delattr(self, '_stream_state')
-            raise
+        else:
+            # Только сбрасываем текущий контент
+            if hasattr(self, '_stream_state'):
+                self._stream_state['current_content'] = ""
 
     def _render_sections(self) -> Panel:
         """Рендерит все секции в одну панель"""
@@ -522,4 +654,17 @@ class ConsolePlugin(BasePlugin):
         if self.use_markdown:
             self.console.print(Markdown(f"{prefix}{message}"), style="dim")
         else:
-            self.console.print(f"{prefix}{message}", style="dim") 
+            self.console.print(f"{prefix}{message}", style="dim")
+
+    async def input_hook(self, message: IOMessage) -> bool:
+        """
+        Проверяет входящие сообщения.
+        В консольном плагине всегда пропускаем сообщения дальше.
+        
+        Args:
+            message: Входящее сообщение
+            
+        Returns:
+            bool: True - всегда пропускаем сообщения
+        """
+        return True

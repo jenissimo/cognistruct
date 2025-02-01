@@ -23,6 +23,7 @@ telegramify_logger.setLevel(logging.INFO)
 telegramify_logger.warn = telegramify_logger.warning  # Добавляем алиас для warn
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # Устанавливаем уровень DEBUG для плагина
 
 class TelegramPlugin(BasePlugin):
     """Telegram плагин для CogniStruct"""
@@ -35,7 +36,7 @@ class TelegramPlugin(BasePlugin):
         self._current_chat_id = None  # Текущий чат для обработки
         self.telegram_user_id = telegram_user_id  # ID пользователя для привязки
         self._chat_linked_callbacks = []  # Коллбэки для привязки чата
-        logger.debug("TelegramPlugin initialized")
+        logger.info("🚀 TelegramPlugin initialized")
         
     def get_metadata(self) -> PluginMetadata:
         return PluginMetadata(
@@ -127,42 +128,62 @@ class TelegramPlugin(BasePlugin):
             await self.db.close()
         
     async def input_hook(self, message: IOMessage) -> bool:
-        """Проверяет привязку чата"""
-        if message.type == "telegram_message":
-            chat_id = message.metadata["chat_id"]
+        """
+        Проверяет привязку чата.
+        
+        Returns:
+            True - пропустить сообщение дальше
+            False - заблокировать сообщение
+        """
+        logger.debug(f"Input hook received message: {message}")
+        
+        # Проверяем, что сообщение от Telegram
+        if message.source == "telegram":
+            chat_id = message.metadata.get("chat_id")
+            if not chat_id:
+                logger.warning("No chat_id in message metadata")
+                return False  # Блокируем сообщение без chat_id
+                
+            logger.debug(f"Checking chat link for chat_id: {chat_id}")
             chat_link = await self.db.get_chat_link(chat_id)
             
             if not chat_link:
+                logger.warning(f"Chat {chat_id} not linked to any user")
                 await self.bot.send_message(
                     chat_id,
                     "Чат не привязан. Используйте /start с секретным ключом"
                 )
-                return True
+                return False  # Блокируем сообщение если чат не привязан
                 
             # Сохраняем chat_id для текущего запроса
+            logger.debug(f"Chat {chat_id} is linked to user {chat_link['user_id']}")
             self._current_chat_id = chat_id
-            return False
+            return True  # Пропускаем сообщение если чат привязан
             
-        return False
+        logger.debug("Message is not from Telegram, passing through")
+        return True  # Пропускаем не-Telegram сообщения
         
     async def output_hook(self, message: IOMessage) -> Optional[IOMessage]:
         """Обработка исходящих сообщений"""
+        logger.info("🔄 Начинаю обработку исходящего сообщения")
+
         # Пытаемся получить chat_id разными способами
         chat_id = (
             message.metadata.get("chat_id") or  # из метаданных сообщения
-            self._current_chat_id or  # из текущего контекста
+            (message.context.metadata.get("chat_id") if message.context else None) or  # из контекста
+            self._current_chat_id or  # из текущего контекста плагина
             (  # или пробуем получить по user_id
-                await self.get_chat_id(str(message.metadata["user_id"]))
-                if "user_id" in message.metadata
+                await self.get_chat_id(str(message.context.user_id if message.context else message.metadata.get("user_id")))
+                if message.context or "user_id" in message.metadata
                 else None
             )
         )
         
         if not chat_id:
-            logger.warning("Could not determine chat_id: no chat_id in metadata, current context, or linked to user_id")
+            logger.warning("❌ Не удалось определить chat_id")
             return message
             
-        logger.debug(f"Output hook using chat_id: {chat_id} for message: {message}")
+        logger.debug(f"Используем chat_id: {chat_id} для сообщения: {message}")
         
         try:
             content = ""
@@ -170,23 +191,41 @@ class TelegramPlugin(BasePlugin):
             # Обрабатываем tool_calls если есть
             tool_calls = message.get_tool_calls()
             if tool_calls:
+                logger.debug(f"Обрабатываю tool_calls: {tool_calls}")
                 for tool_call in tool_calls:
+                    # Создаем сообщение для вызова инструмента
                     if "call" in tool_call:
-                        content += f"\n🔧 Использую инструмент: {tool_call['call']['function']['name']}\n"
+                        tool_msg = IOMessage(
+                            type="tool_call",
+                            content=f"\n🔧 Использую инструмент: {tool_call['call']['function']['name']}\n",
+                            metadata={"chat_id": chat_id},
+                            context=message.context  # Передаем контекст
+                        )
+                        content += tool_msg.content
+                        
+                    # Создаем сообщение для результата
                     if "result" in tool_call:
-                        content += f"✅ Результат: {tool_call['result']['content']}\n"
+                        result_msg = IOMessage(
+                            type="tool_result",
+                            content=f"✅ Результат: {tool_call['result']['content']}\n",
+                            metadata={"chat_id": chat_id},
+                            context=message.context  # Передаем контекст
+                        )
+                        content += result_msg.content
             
             # Добавляем основной контент сообщения
             if message.content is not None:
                 content += str(message.content)
+                logger.debug(f"Добавлен контент: {content}")
 
             # Если контент пустой, используем плейсхолдер
             if not content.strip():
-                logger.warning("Empty message content, using placeholder")
+                logger.warning("Пустой контент сообщения, использую плейсхолдер")
                 content = "..."
 
             # Проверяем тип сообщения
             if message.type == "interactive_message" and "options" in message.metadata:
+                logger.debug("Отправляю интерактивное сообщение с кнопками")
                 # Формируем кнопки для интерактивного сообщения
                 buttons = [
                     {
@@ -198,18 +237,20 @@ class TelegramPlugin(BasePlugin):
                 await self.send_buttons(chat_id, content, buttons)
             else:
                 # Отправляем обычное сообщение
+                logger.debug("Отправляю обычное сообщение")
                 boxes = await format_message(content)
                 for item in boxes:
                     await send_content_box(self.bot, chat_id, item)
                     
         except Exception as e:
-            logger.error(f"Error processing message: {e}", exc_info=True)
+            logger.error(f"❌ Ошибка при обработке сообщения: {e}", exc_info=True)
             # В случае ошибки пробуем отправить без форматирования
             await self.bot.send_message(
                 chat_id=chat_id,
                 text=content if content.strip() else "..."  # Используем плейсхолдер если контент пустой
             )
                     
+        logger.info("✅ Сообщение успешно обработано и отправлено")
         return message
 
     async def streaming_output_hook(self, message: IOMessage) -> AsyncGenerator[IOMessage, None]:
@@ -218,61 +259,81 @@ class TelegramPlugin(BasePlugin):
         Показывает индикатор набора пока идет генерация.
         Само сообщение будет отправлено через output_hook.
         """
-        logger.debug("Processing stream in Telegram plugin")
+        logger.info("🔄 Начинаю обработку стрима в Telegram")
         
         if not message.stream:
-            logger.warning("No stream in message")
+            logger.warning("❌ Нет стрима в сообщении")
             yield message
             return
             
-        chat_id = message.metadata.get("chat_id")
-        if not chat_id:
-            logger.error("No chat_id in metadata")
-            yield message
-            return
-            
-        last_typing = 0
-        TYPING_INTERVAL = 4  # Интервал обновления typing в секундах
+        # Пытаемся получить chat_id разными способами
+        chat_id = (
+            message.metadata.get("chat_id") or  # из метаданных сообщения
+            (message.context.metadata.get("chat_id") if message.context else None) or  # из контекста
+            self._current_chat_id  # из текущего контекста плагина
+        )
         
+        if not chat_id:
+            logger.warning("❌ Не удалось определить chat_id для стрима")
+            async for chunk in message.stream:
+                yield chunk
+            return
+            
         try:
-            logger.debug("Starting to iterate over message.stream")
-            
-            # Создаем новый генератор для стрима
-            async def process_stream():
-                nonlocal last_typing
-                
-                async for chunk in message.stream:
-                    now = time.time()
-                    
-                    # Обновляем индикатор набора каждые TYPING_INTERVAL секунд
-                    if now - last_typing > TYPING_INTERVAL:
-                        await self.bot.send_chat_action(
-                            chat_id=chat_id, 
-                            action="typing"
-                        )
-                        last_typing = now
-                    
-                    yield chunk
-            
-            # Создаем новое сообщение со стримом
-            new_message = IOMessage(
-                type=message.type,
-                content=message.content,
-                metadata=message.metadata,
-                source=message.source,
-                is_async=True,
-                tool_calls=message.tool_calls.copy() if message.tool_calls else [],
-                stream=process_stream()
+            # Показываем индикатор набора
+            typing_task = asyncio.create_task(
+                self._show_typing_indicator(chat_id)
             )
+            logger.debug(f"🎯 Запущен индикатор набора для chat_id: {chat_id}")
             
-            # Передаем сообщение дальше
-            logger.debug(f"Yielding message to next plugin: {new_message}")
-            yield new_message
+            # Инициализируем состояние стрима
+            current_content = ""
+            tool_calls = []
             
-            logger.debug("Finished iterating over message.stream")
+            # Обрабатываем стрим
+            async for chunk in message.stream:
+                logger.debug(f"📝 Получен чанк: {chunk.content[:50]}...")
                 
+                # Копируем контекст в чанк если его нет
+                if message.context and not chunk.context:
+                    chunk.context = message.context
+                    
+                # Добавляем chat_id в метаданные чанка
+                if "chat_id" not in chunk.metadata:
+                    chunk.metadata["chat_id"] = chat_id
+                    
+                # Накапливаем контент
+                if chunk.metadata.get("delta"):
+                    current_content += chunk.metadata["delta"]
+                    
+                # Собираем tool_calls
+                if chunk.tool_calls:
+                    tool_calls.extend(chunk.tool_calls)
+                                        
+                yield chunk
+                
+            # Создаем финальное сообщение
+            final_message = IOMessage(
+                type="text",
+                content=current_content,
+                metadata={"chat_id": chat_id},
+                source="agent",
+                context=message.context,
+                tool_calls=tool_calls
+            )
+            # Отправляем через output_hook
+            if len(current_content) > 0 or len(tool_calls) > 0:
+                await self.output_hook(final_message)
+
+            # Отменяем индикатор набора
+            typing_task.cancel()
+            logger.debug("✅ Стрим завершен, индикатор набора отключен")
+            
         except Exception as e:
-            logger.error(f"Error in streaming_output_hook: {e}", exc_info=True)
+            logger.error(f"❌ Ошибка при обработке стрима: {e}", exc_info=True)
+            # Отменяем индикатор набора в случае ошибки
+            if 'typing_task' in locals():
+                typing_task.cancel()
             raise
         
     async def check_chat_link(self, user_id: str) -> Optional[str]:
@@ -447,4 +508,26 @@ class TelegramPlugin(BasePlugin):
             logger.error("Bot not initialized")
             return
 
-        await self.bot.send_message_with_buttons(chat_id, text, buttons, **kwargs) 
+        await self.bot.send_message_with_buttons(chat_id, text, buttons, **kwargs)
+
+    async def _show_typing_indicator(self, chat_id: str):
+        """
+        Показывает индикатор набора с интервалом
+        
+        Args:
+            chat_id: ID чата
+        """
+        TYPING_INTERVAL = 4  # Интервал обновления typing в секундах
+        
+        try:
+            while True:
+                await self.bot.send_chat_action(
+                    chat_id=chat_id, 
+                    action="typing"
+                )
+                await asyncio.sleep(TYPING_INTERVAL)
+        except asyncio.CancelledError:
+            # Нормальное завершение при отмене задачи
+            pass
+        except Exception as e:
+            logger.error(f"❌ Ошибка при показе индикатора набора: {e}", exc_info=True) 

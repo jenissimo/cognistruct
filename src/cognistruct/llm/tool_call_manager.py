@@ -9,6 +9,7 @@ from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall
 
 from cognistruct.core.messages import IOMessage
+from cognistruct.core.context import RequestContext
 from cognistruct.llm.interfaces import ToolCall
 from cognistruct.utils.logging import setup_logger
 
@@ -28,6 +29,7 @@ class ToolCallResult:
     call: ToolCallDict  # Информация о вызове
     result: Dict[str, Any]  # Результат выполнения
     error: Optional[str] = None  # Ошибка если была
+    context: Optional[RequestContext] = None  # Контекст вызова
 
 
 class ToolCallBuilder:
@@ -118,12 +120,17 @@ class ToolCallManager:
     """Менеджер для работы с вызовами инструментов и их результатами"""
     
     def __init__(self):
-        self._tool_executor: Optional[Callable[[str, Dict[str, Any]], Awaitable[Any]]] = None
+        self._tool_executor: Optional[Callable[[str, Dict[str, Any], Optional[RequestContext]], Awaitable[Any]]] = None
         self._processed_calls: Set[str] = set()  # Для отслеживания дубликатов
+        self._context: Optional[RequestContext] = None  # Контекст для инструментов
         
-    def set_tool_executor(self, executor: Callable[[str, Dict[str, Any]], Awaitable[Any]]) -> None:
+    def set_tool_executor(self, executor: Callable[[str, Dict[str, Any], Optional[RequestContext]], Awaitable[Any]]) -> None:
         """Устанавливает функцию для выполнения инструментов"""
         self._tool_executor = executor
+        
+    def set_context(self, context: RequestContext) -> None:
+        """Устанавливает контекст для инструментов"""
+        self._context = context
         
     def _generate_tool_call_id(self) -> str:
         """Генерирует уникальный ID для вызова инструмента"""
@@ -136,88 +143,76 @@ class ToolCallManager:
             return True
         self._processed_calls.add(call_hash)
         return False
+
+    async def execute_tool_call(self, tool_call: ToolCallDict) -> ToolCallResult:
+        """
+        Выполняет один вызов инструмента
         
+        Args:
+            tool_call: Информация о вызове инструмента
+            
+        Returns:
+            ToolCallResult: Результат выполнения
+        """
+        if not self._tool_executor:
+            raise RuntimeError("Tool executor не установлен")
+
+        try:
+            # Получаем имя и аргументы инструмента
+            tool_name = tool_call['function']['name']
+            args_str = tool_call['function']['arguments']
+            
+            # Проверяем на дубликат
+            if self._is_duplicate_call(tool_name, args_str):
+                return ToolCallResult(
+                    call=tool_call,
+                    result={"content": "Дубликат вызова инструмента пропущен"},
+                    error=None,
+                    context=self._context
+                )
+                
+            # Парсим аргументы
+            args = json.loads(args_str)
+            
+            # Выполняем инструмент
+            result = await self._tool_executor(tool_name, args, self._context)
+            
+            # Возвращаем результат
+            return ToolCallResult(
+                call=tool_call,
+                result={"content": str(result)},
+                error=None,
+                context=self._context
+            )
+                
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Error executing tool call: {error_msg}")
+            return ToolCallResult(
+                call=tool_call,
+                result=None,
+                error=error_msg,
+                context=self._context
+            )
+
     async def process_tool_calls(
         self,
-        tool_calls: List[ToolCallDict],
-        messages: List[Dict[str, Any]]
+        tool_calls: List[ToolCallDict]
     ) -> List[ToolCallResult]:
         """
         Обрабатывает список вызовов инструментов
         
         Args:
             tool_calls: Список вызовов инструментов
-            messages: История сообщений для обновления
             
         Returns:
             List[ToolCallResult]: Результаты выполнения инструментов
         """
-        if not self._tool_executor:
-            raise RuntimeError("Tool executor не установлен")
-            
         results = []
         
-        # Создаем сообщение от ассистента с вызовами инструментов
-        assistant_message = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": []
-        }
-        
         for tool_call in tool_calls:
-            # Получаем имя и аргументы инструмента
-            tool_name = tool_call['function']['name']
-            tool_args = tool_call['function']['arguments']
-            
-            # Проверяем на дубликат
-            if self._is_duplicate_call(tool_name, tool_args):
-                continue
-                
-            try:
-                # Парсим аргументы
-                args = json.loads(tool_args)
-                tool_id = tool_call.get('id', self._generate_tool_call_id())
-                
-                # Добавляем информацию о вызове в сообщение ассистента
-                assistant_message["tool_calls"].append({
-                    "id": tool_id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": tool_args
-                    }
-                })
-                
-                # Выполняем инструмент
-                result = await self._tool_executor(tool_name, args)
-                
-                # Создаем сообщение с результатом
-                tool_message = {
-                    "role": "tool",
-                    "content": str(result),
-                    "tool_call_id": tool_id
-                }
-                
-                # Добавляем сообщения в историю
-                messages.extend([assistant_message, tool_message])
-                
-                # Сохраняем результат
-                results.append(ToolCallResult(
-                    call=tool_call,  # Используем оригинальный tool_call
-                    result=tool_message,
-                    error=None
-                ))
-                
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Tool execution failed: {error_msg}")
-                
-                # Сохраняем ошибку
-                results.append(ToolCallResult(
-                    call=tool_call,  # Используем оригинальный tool_call даже при ошибке
-                    result=None,
-                    error=error_msg
-                ))
+            result = await self.execute_tool_call(tool_call)
+            results.append(result)
                 
         return results
         
@@ -248,23 +243,18 @@ class ToolCallManager:
             metadata={
                 "delta": delta,
                 "is_complete": is_complete
-            }
+            },
+            context=self._context  # Добавляем контекст в чанк
         )
         
+        # Добавляем информацию о tool_call если есть
         if tool_call:
-            chunk.add_tool_call(
-                tool_name=tool_call["function"]["name"],
-                args=json.loads(tool_call["function"]["arguments"]),
-                tool_id=tool_call["id"]
-            )
-        
+            chunk.metadata["tool_call"] = tool_call
+            
+        # Добавляем результат если есть
         if tool_result:
-            # Добавляем результат к последнему tool_call
-            if chunk.tool_calls:
-                last_call = chunk.get_last_tool_call()
-                if last_call:
-                    last_call["result"] = tool_result
-        
+            chunk.metadata["tool_result"] = tool_result
+            
         return chunk
         
     async def handle_stream_chunk(
@@ -302,7 +292,8 @@ class ToolCallManager:
                 args = json.loads(args_str)
                 result = await self._tool_executor(
                     tool_call["function"]["name"],
-                    args
+                    args,
+                    self._context
                 )
                 
                 # Создаем сообщение с результатом

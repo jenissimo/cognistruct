@@ -17,6 +17,14 @@ from cognistruct.plugins.tools.internet import InternetPlugin
 # Загружаем конфигурацию
 config = Config.load()
 
+# Настраиваем логирование
+init_logging(level=logging.DEBUG)  # Меняем уровень на DEBUG
+logger = setup_logger(__name__)
+
+# Добавляем логирование для telegram модулей
+telegram_logger = logging.getLogger("cognistruct.plugins.io.telegram")
+telegram_logger.setLevel(logging.DEBUG)
+
 # Конфигурация LLM
 LLM_CONFIG = {
     "provider": "deepseek",
@@ -34,17 +42,17 @@ LLM_CONFIG = {
 }
 
 # Системный промпт для агента
-SYSTEM_PROMPT = """
+def get_system_prompt() -> str:
+    return f"""
 Ты - полезный ассистент идеально владеющий русским языком. Отвечай на русском языке. 
+
+Текущая дата и время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
 
 Ты можешь использовать инструменты для поиска информации в интернете.
 
 Не используй повторно один и тот же инструмент дважды.
 Используй инструменты только когда это действительно нужно.
 """.strip()
-
-init_logging(level=logging.DEBUG)
-logger = setup_logger(__name__)
 
 async def main():
     """Точка входа"""
@@ -62,7 +70,7 @@ async def main():
         # Создаем минимальный набор плагинов
         telegram = TelegramPlugin(telegram_user_id="test_user")
         scheduler = SchedulerPlugin(
-            tick_interval=1.0,
+            tick_interval=10.0,
             timezone=str(get_timezone())
         )
         calculator = CalculatorPlugin()
@@ -71,23 +79,26 @@ async def main():
             min_word_count=20      # Минимум слов в блоке текста
         )
         
-        # Инициализируем плагины
-        telegram_status = await telegram.setup(token=config.telegram_token)
-        await scheduler.setup()
-        await calculator.setup()
-        await internet.setup()
-        
         # Регистрируем плагины
         agent.plugin_manager.register_plugin("telegram", telegram)
         agent.plugin_manager.register_plugin("scheduler", scheduler)
         agent.plugin_manager.register_plugin("calculator", calculator)
         agent.plugin_manager.register_plugin("internet", internet)
         
+        # Запускаем агента (до инициализации плагинов)
+        await agent.start()
+        
+        # Инициализируем плагины
+        telegram_status = await telegram.setup(token=config.telegram_token)
+        await scheduler.setup()
+        await calculator.setup()
+        await internet.setup()
+        
         # Подключаем обработчик к телеграму с предустановленными параметрами
         telegram.set_message_handler(
             partial(
                 agent.handle_message,
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=get_system_prompt,  # Передаем функцию вместо строки
                 stream=True  # Включаем стриминг
             )
         )

@@ -1,13 +1,16 @@
 import importlib
 import os
-from typing import Dict, List, Optional, Type, Any, Tuple, Set
+from typing import Dict, List, Optional, Type, Any, Tuple, Set, Union, AsyncContextManager
 from contextlib import contextmanager, asynccontextmanager
+import logging
 
 from .base_plugin import BasePlugin, IOMessage
 from cognistruct.utils.logging import setup_logger
+from ..llm.interfaces import ToolSchema
+from .context import RequestContext
 
 
-logger = setup_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class PluginManager:
@@ -19,6 +22,14 @@ class PluginManager:
         self._input_handlers: Dict[str, List[BasePlugin]] = {}  # type -> [plugins]
         self._output_handlers: Dict[str, List[BasePlugin]] = {}  # type -> [plugins]
         self._allowed_tools: Optional[Set[str]] = None  # Добавляем список разрешенных инструментов
+        self.agent = None  # Ссылка на агента
+
+    def set_agent(self, agent):
+        """Устанавливает ссылку на агента"""
+        self.agent = agent
+        # Обновляем ссылку на агента у существующих плагинов
+        for plugin in self._plugins.values():
+            setattr(plugin, 'agent', agent)
 
     def register_plugin_class(self, name: str, plugin_class: Type[BasePlugin]):
         """Регистрирует класс плагина"""
@@ -37,6 +48,10 @@ class PluginManager:
             
         # Регистрируем плагин
         self._plugins[name] = plugin
+        
+        # Устанавливаем ссылку на агента
+        if self.agent:
+            plugin.agent = self.agent
         
         # Регистрируем обработчики I/O
         for input_type in plugin.supported_input_types:
@@ -174,31 +189,46 @@ class PluginManager:
         self._input_handlers.clear()
         self._output_handlers.clear()
 
-    async def execute_rag_hooks(self, query: str) -> Dict[str, Any]:
-        """Выполняет RAG-хуки всех плагинов"""
+    async def execute_rag_hooks(self, message: IOMessage) -> Dict[str, Any]:
+        """
+        Выполняет RAG-хуки всех плагинов
+        
+        Args:
+            message: Сообщение пользователя с контекстом и метаданными
+            
+        Returns:
+            Dict[str, Any]: Дополнительный контекст от плагинов
+        """
         context = {}
         for plugin in self.get_all_plugins():
             try:
-                plugin_context = await plugin.rag_hook(query)
+                plugin_context = await plugin.rag_hook(message)
                 if plugin_context:
                     context[plugin.name] = plugin_context
             except Exception as e:
                 logger.error(f"Error in RAG hook of plugin {plugin.name}: {e}")
         return context
 
-    async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Any:
-        """Выполняет инструмент одного из плагинов"""
+    async def execute_tool(self, tool_name: str, params: Dict[str, Any], context: Optional[RequestContext] = None) -> Any:
+        """
+        Выполняет инструмент одного из плагинов
+        
+        Args:
+            tool_name: Имя инструмента
+            params: Параметры для выполнения
+            context: Контекст запроса
+        """
         # Сначала ищем плагин, у которого есть этот инструмент
         for plugin in self.get_all_plugins():
             if any(tool.name == tool_name for tool in plugin.get_tools()):
                 try:
-                    return await plugin.execute_tool(tool_name, params)
+                    return await plugin.execute_tool(tool_name, params, context)
                 except Exception as e:
                     logger.error("Error executing tool %s in plugin %s: %s", 
                                tool_name, plugin.name, str(e))
                     raise
         
-        raise ValueError(f"Tool {tool_name} not found in any plugin") 
+        raise ValueError(f"Tool {tool_name} not found in any plugin")
 
     @asynccontextmanager
     async def limit_tools(self, allowed_tools: List[str]):
@@ -211,7 +241,12 @@ class PluginManager:
             self._allowed_tools = previous
             
     def get_all_tools(self) -> List[Dict[str, Any]]:
-        """Возвращает список доступных инструментов от всех плагинов"""
+        """
+        Возвращает список доступных инструментов от всех плагинов
+        
+        Returns:
+            List[Dict[str, Any]]: Список инструментов в формате OpenAI
+        """
         tools = []
         for plugin in self.get_all_plugins():
             plugin_tools = plugin.get_tools()
@@ -219,7 +254,41 @@ class PluginManager:
                 # Фильтруем инструменты если есть ограничения
                 plugin_tools = [
                     tool for tool in plugin_tools 
-                    if tool.name in self._allowed_tools
+                    if (isinstance(tool, dict) and tool["name"] in self._allowed_tools) or
+                       (isinstance(tool, ToolSchema) and tool.name in self._allowed_tools)
                 ]
-            tools.extend(plugin_tools)
+            
+            # Конвертируем все инструменты в формат OpenAI
+            for tool in plugin_tools:
+                if isinstance(tool, dict):
+                    tools.append({
+                        "type": "function",
+                        "function": tool
+                    })
+                else:
+                    # Собираем параметры
+                    properties = {}
+                    required = []
+                    for param in tool.parameters:
+                        properties[param.name] = {
+                            "type": param.type,
+                            "description": param.description
+                        }
+                        if param.required:
+                            required.append(param.name)
+
+                    # Формируем схему функции
+                    tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": {
+                                "type": "object",
+                                "properties": properties,
+                                "required": required
+                            }
+                        }
+                    })
+                    
         return tools 

@@ -1,10 +1,11 @@
 """Базовые классы для плагинов"""
 
 from dataclasses import dataclass
-from typing import Dict, Any, Optional, List, AsyncGenerator
+from typing import Dict, Any, Optional, List, AsyncGenerator, Union
 
 from .messages import IOMessage
-from .context import GlobalContext
+from .context import GlobalContext, RequestContext
+from ..llm.interfaces import ToolSchema
 
 @dataclass
 class PluginMetadata:
@@ -13,6 +14,7 @@ class PluginMetadata:
     description: str = ""
     version: str = "1.0.0"
     priority: int = 0  # Приоритет для сортировки (больше - важнее)
+    author: str = ""  # Добавляем поле для автора
 
 class BasePlugin:
     """
@@ -33,6 +35,7 @@ class BasePlugin:
         self._supported_input_types: List[str] = []
         self._supported_output_types: List[str] = []
         self.context = GlobalContext
+        self.agent = None  # Ссылка на агента как обычный атрибут
     
     @property
     def name(self) -> str:
@@ -91,13 +94,32 @@ class BasePlugin:
         """
         pass
     
-    def get_tools(self) -> List[Dict[str, Any]]:
-        """Возвращает список доступных инструментов"""
+    def get_tools(self) -> List[Union[ToolSchema, Dict[str, Any]]]:
+        """
+        Возвращает список доступных инструментов
+        
+        Returns:
+            List[Union[ToolSchema, Dict[str, Any]]]: Список инструментов в виде объектов ToolSchema
+            или словарей в формате OpenAI
+        """
         return []
     
-    async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Any:
-        """Выполняет инструмент"""
-        raise NotImplementedError()
+    async def execute_tool(self, tool_name: str, params: Dict[str, Any], context: Optional[RequestContext] = None) -> Any:
+        """
+        Выполняет инструмент с заданными параметрами
+        
+        Args:
+            tool_name: Имя инструмента
+            params: Параметры для выполнения
+            context: Контекст запроса
+            
+        Returns:
+            Any: Результат выполнения инструмента
+            
+        Raises:
+            ValueError: Если инструмент не найден
+        """
+        raise NotImplementedError("Plugin must implement execute_tool method")
 
     # CRUDS базовые методы
     async def create(self, data: Dict[str, Any]) -> Any:
@@ -161,12 +183,12 @@ class BasePlugin:
         """
         raise NotImplementedError()
     
-    async def rag_hook(self, query: str) -> Optional[Dict[str, Any]]:
+    async def rag_hook(self, message: IOMessage) -> Optional[Dict[str, Any]]:
         """
         Хук для RAG (Retrieval Augmented Generation)
         
         Args:
-            query: Запрос пользователя
+            message: Сообщение пользователя с контекстом и метаданными
             
         Returns:
             Дополнительный контекст для LLM или None
@@ -175,15 +197,17 @@ class BasePlugin:
 
     async def input_hook(self, message: IOMessage) -> bool:
         """
-        Обработка входящих сообщений
+        Обработка входящих сообщений.
+        По умолчанию пропускает все сообщения дальше.
         
         Args:
             message: Входящее сообщение
             
         Returns:
-            True если сообщение обработано, False если нужно продолжить обработку
+            True - пропустить сообщение дальше
+            False - заблокировать сообщение
         """
-        return False
+        return True  # По умолчанию пропускаем все сообщения
         
     async def output_hook(self, message: IOMessage) -> Optional[IOMessage]:
         """
