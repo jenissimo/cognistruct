@@ -54,8 +54,7 @@ class VersionedStoragePlugin(BasePlugin):
         return PluginMetadata(
             name="versioned_storage",
             description="Хранилище версионированных артефактов",
-            version="0.3.0",
-            author="Cognistruct"
+            version="0.3.0"
         )
         
     async def setup(self):

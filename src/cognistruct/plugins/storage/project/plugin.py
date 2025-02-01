@@ -43,8 +43,7 @@ class ProjectStoragePlugin(BasePlugin):
         return PluginMetadata(
             name="project_storage",
             description="Управление проектами",
-            version="0.1.0",
-            author="Cognistruct"
+            version="0.1.0"
         )
         
     async def setup(self):
